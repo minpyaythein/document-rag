@@ -40,6 +40,44 @@ SYSTEM_PROMPT = (
     "Context:\n{context}"
 )
 
+# --- Internationalization (UI strings) ---
+# Streamlit has no built-in i18n, so UI copy is keyed by language here. The chat
+# answers themselves come from the model and follow the user's question language.
+LANGUAGES = {"en": "English", "ja": "日本語"}
+
+TRANSLATIONS = {
+    "en": {
+        "header": "DocumentRAG — Chat with your PDF",
+        "sidebar_title": "Your Documents",
+        "uploader_label": "Upload your PDF here",
+        "uploader_help": "One PDF at a time. Uploading a new file replaces the current one.",
+        "uploader_caption": "📄 One PDF at a time — a new upload replaces the current document.",
+        "upload_prompt": "Upload a PDF in the sidebar to get started.",
+        "indexing": "Indexing your document...",
+        "missing_env": "Missing required .env value(s): {names}. Add them to your .env file.",
+        "scanned_pdf": "No extractable text found — this looks like a scanned or image-only PDF.",
+        "index_failed": "Failed to index the document: {error}",
+        "question_label": "Ask a question about your document",
+        "ask_button": "Ask",
+        "answer_failed": "Couldn't get an answer: {error}",
+    },
+    "ja": {
+        "header": "DocumentRAG — PDFと対話するチャットボット",
+        "sidebar_title": "ドキュメント",
+        "uploader_label": "PDFをここにアップロード",
+        "uploader_help": "一度に1つのPDFのみ。新しいファイルをアップロードすると、現在のPDFと置き換わります。",
+        "uploader_caption": "📄 一度に1つのPDFのみ — 新しいアップロードで現在のドキュメントと置き換わります。",
+        "upload_prompt": "サイドバーからPDFをアップロードして始めましょう。",
+        "indexing": "ドキュメントをインデックス化しています...",
+        "missing_env": "必須の .env 値が不足しています: {names}。.env ファイルに追加してください。",
+        "scanned_pdf": "抽出可能なテキストが見つかりません — スキャン画像のみのPDFのようです。",
+        "index_failed": "ドキュメントのインデックス作成に失敗しました: {error}",
+        "question_label": "ドキュメントについて質問してください",
+        "ask_button": "質問する",
+        "answer_failed": "回答を取得できませんでした: {error}",
+    },
+}
+
 
 def extract_text(file) -> str:
     """Read every page of a PDF into a single string."""
@@ -52,7 +90,7 @@ def extract_text(file) -> str:
     return text
 
 
-@st.cache_resource(show_spinner="Indexing your document...")
+@st.cache_resource(show_spinner=False)
 def build_retriever(file_bytes: bytes):
     """Chunk, embed, and index the PDF, returning a FAISS retriever.
 
@@ -106,14 +144,31 @@ def build_chain(retriever):
 
 
 def main() -> None:
-    st.header("DocumentRAG — Chat with your PDF")
+    # Language switcher, pinned to the top-right of the page.
+    _, lang_col = st.columns([5, 1])
+    with lang_col:
+        lang = st.selectbox(
+            "Language",
+            options=list(LANGUAGES),
+            format_func=lambda code: LANGUAGES[code],
+            label_visibility="collapsed",
+            key="lang",
+        )
+    t = TRANSLATIONS[lang]
+
+    st.header(t["header"])
 
     with st.sidebar:
-        st.title("Your Documents")
-        file = st.file_uploader("Upload your PDF here", type=["pdf"])
+        st.title(t["sidebar_title"])
+        file = st.file_uploader(
+            t["uploader_label"],
+            type=["pdf"],
+            help=t["uploader_help"],
+        )
+        st.caption(t["uploader_caption"])
 
     if file is None:
-        st.info("Upload a PDF in the sidebar to get started.")
+        st.info(t["upload_prompt"])
         return
 
     missing = [
@@ -126,22 +181,23 @@ def main() -> None:
         if not value
     ]
     if missing:
-        st.error(f"Missing required .env value(s): {', '.join(missing)}. Add them to your .env file.")
+        st.error(t["missing_env"].format(names=", ".join(missing)))
         return
 
     try:
-        retriever = build_retriever(file.getvalue())
+        with st.spinner(t["indexing"]):
+            retriever = build_retriever(file.getvalue())
         chain = build_chain(retriever)
-    except ValueError as e:
-        st.error(str(e))
+    except ValueError:
+        st.error(t["scanned_pdf"])
         return
     except Exception as e:  # embedding/index failure: API error, bad key or model, etc.
-        st.error(f"Failed to index the document: {e}")
+        st.error(t["index_failed"].format(error=e))
         return
 
     with st.form("ask"):
-        question = st.text_input("Ask a question about your document")
-        submitted = st.form_submit_button("Ask")
+        question = st.text_input(t["question_label"])
+        submitted = st.form_submit_button(t["ask_button"])
 
     # Only invoke on an explicit submit, so an unrelated rerun (e.g. uploading a new
     # PDF) never re-answers a stale question or re-bills the API.
@@ -149,7 +205,7 @@ def main() -> None:
         try:
             st.write_stream(chain.stream(question))
         except Exception as e:  # LLM call failed: rate limit, network, bad model
-            st.error(f"Couldn't get an answer: {e}")
+            st.error(t["answer_failed"].format(error=e))
 
 
 if __name__ == "__main__":

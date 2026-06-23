@@ -162,7 +162,8 @@ changes in one place: `CHUNK_SIZE`, `CHUNK_OVERLAP`, `EMBEDDING_MODEL`, `CHAT_MO
 `temperature=0.3` keeps answers factual; `THINKING = {"type": "disabled"}` skips GLM's
 reasoning trace for faster first-token latency. Two keys load from `.env` (never
 hardcoded) — `ZAI_API_KEY` (chat) and `GOOGLE_API_KEY` (embeddings) — and `main()` guards
-against either being missing.
+against either being missing. UI copy is centralized in a `TRANSLATIONS` dict (`en`/`ja`)
+for the bilingual interface, with the language picked by a top-right selector.
 
 ---
 
@@ -176,6 +177,7 @@ against either being missing.
 | "Why chunk overlap?" | So meaning isn't lost at hard split boundaries — adjacent chunks share 200 chars. |
 | "What's the performance gotcha?" | Streamlit reruns the whole script per interaction; `@st.cache_resource` stops the PDF being re-embedded every question. |
 | "Is it real token streaming?" | Yes — `chain.stream()` yields tokens and `st.write_stream` renders them live as GLM-5.2 generates them. |
+| "How is the UI bilingual?" | A `TRANSLATIONS` dict keyed `en`/`ja`; a top-right selector sets `st.session_state["lang"]` and every label/message renders through it. Streamlit has no built-in i18n, so the strings are kept in-app. |
 | "How would you scale it?" | Persist the index (e.g. pgvector/Chroma), support multiple/large docs, add conversation memory, and cite which chunks an answer came from. |
 
 ---

@@ -139,6 +139,26 @@ Fixed the three high-priority items from the full code review (`main.py`):
 
 ---
 
+## 2026-06-24: Single-PDF hint + bilingual UI (i18n)
+
+- **Single-PDF hint** — the uploader was already single-file (Streamlit's
+  `accept_multiple_files` defaults to off), but nothing told the user. Added an
+  always-visible sidebar caption ("One PDF at a time — a new upload replaces the current
+  document") plus a matching `help` tooltip.
+- **Bilingual UI (EN/JA)** — added in-app i18n. A `TRANSLATIONS` dict (keyed `en`/`ja`) holds
+  every UI string; all labels, captions, and error/info messages now render through `t[...]`.
+  A language switcher (`st.selectbox`, label hidden) is pinned top-right via
+  `st.columns([5, 1])`; the choice lives in `st.session_state["lang"]`, so switching language
+  re-renders the whole UI **without dropping the uploaded PDF** (the FAISS index stays cached).
+- **Spinner made translatable** — `build_retriever`'s `@st.cache_resource(show_spinner=...)`
+  became `show_spinner=False`, with `st.spinner(t["indexing"])` wrapping the call so the
+  indexing message follows the selected language.
+- **Scope note** — Streamlit's built-in uploader strings ("Drag and drop file here",
+  "Browse files", "Limit 200MB per file") stay English; they live inside Streamlit and have no
+  public i18n hook. Model answers follow the *question's* language, not the UI toggle.
+
+---
+
 ## Frozen facts (keep consistent everywhere)
 
 - **Chat model**: set via `ZAI_MODEL` in `.env` (e.g. `glm-5.2`), through Z.AI, endpoint `https://api.z.ai/api/coding/paas/v4` (`temperature=0.3`, `max_tokens=1024`)

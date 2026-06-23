@@ -41,8 +41,8 @@ Single-file app (`main.py`), organized into small functions:
    and indexes into FAISS. Wrapped in `@st.cache_resource` keyed on the file bytes
    so the document isn't re-embedded on every Streamlit rerun.
 3. `build_chain` — wires `retriever -> prompt -> Z.AI GLM (ChatOpenAI) -> StrOutputParser`
-4. `main` — Streamlit UI flow: upload → (cached) index → ask via an `st.form` →
-   stream the answer live with `st.write_stream(chain.stream(...))`
+4. `main` — Streamlit UI flow: pick language (top-right selector) → upload → (cached) index
+   → ask via an `st.form` → stream the answer live with `st.write_stream(chain.stream(...))`
 
 Configuration (chunk size/overlap, model names, temperature, system prompt) lives in
 module-level constants at the top of `main.py`.
@@ -53,3 +53,5 @@ module-level constants at the top of `main.py`.
 - `ZAI_MODEL` (required) sets the chat model id, e.g. `glm-5.2`
 - Python: requires 3.11+ (`pyproject.toml`); dev env pinned to 3.14 via `.python-version`
 - Dependencies are pinned in both `requirements.txt` and `pyproject.toml` — keep them in sync
+- UI strings are bilingual (EN/JA) in a `TRANSLATIONS` dict in `main.py`; a top-right selector
+  sets the language. When changing any UI copy, update **both** the `en` and `ja` entries.

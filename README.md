@@ -21,6 +21,8 @@ for answers and Google Gemini embeddings over a FAISS vector store, in one `main
 - **Streamed responses** — answers stream in token-by-token as the model generates them.
 - **Index once, not per question** — embedding is cached on the file, so re-asking is fast
   and doesn't re-spend on the same document.
+- **Bilingual UI (EN/JA)** — switch the whole interface between English and 日本語 from the
+  language selector in the top-right corner.
 
 ---
 
