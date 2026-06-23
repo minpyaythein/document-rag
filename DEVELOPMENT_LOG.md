@@ -159,6 +159,35 @@ Fixed the three high-priority items from the full code review (`main.py`):
 
 ---
 
+## 2026-06-24: Language-switcher polish + indexing UX fixes
+
+Follow-up pass after i18n landed — styling plus a few state/rendering fixes:
+- **Language switcher styling** — the EN/JA selector (top-right) got a pointer cursor and a
+  hidden text caret (it's a searchable field underneath), so it reads as a plain dropdown, not
+  a text box.
+- **Japanese uploader strings** — the JA scope note above is now partly addressed: Streamlit's
+  built-in dropzone text is overridden for the JA UI via CSS (`UPLOADER_JA_CSS`, injected only
+  when `lang == "ja"`). It targets Streamlit's internal test-ids, so it may need a tweak on a
+  Streamlit upgrade.
+- **Removed the uploader `?` tooltip** — the single-PDF rule is already shown by the caption
+  below it; dropped the now-dead `uploader_help` key.
+- **Sidebar widened** to 320px for more breathing room.
+- **JA header kept on one line** — the longer Japanese title wrapped; `white-space: nowrap` on
+  the heading keeps it single-line.
+- **Retry on index failure** — the transient indexing-error branch now shows a "🔄 Retry
+  indexing" button that clears the cache and re-runs. It's rendered through an `st.empty()`
+  placeholder so clicking it removes the error before retrying. (The scanned-PDF `ValueError`
+  has no retry — it isn't recoverable.)
+- **Upload prompt no longer lingers dimmed** — it's rendered in a placeholder and emptied the
+  instant a file is present, so Streamlit's stale-element dimming doesn't leave it greyed on
+  screen during the blocking indexing call.
+- **Language switch keeps the PDF** — gave the uploader a stable `key="pdf_uploader"`. Without
+  it, the label changing with language made Streamlit treat it as a new widget and drop the
+  file (which also forced a re-index); the key keeps the upload and its cached index across a
+  switch.
+
+---
+
 ## Frozen facts (keep consistent everywhere)
 
 - **Chat model**: set via `ZAI_MODEL` in `.env` (e.g. `glm-5.2`), through Z.AI, endpoint `https://api.z.ai/api/coding/paas/v4` (`temperature=0.3`, `max_tokens=1024`)

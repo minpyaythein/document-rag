@@ -50,13 +50,13 @@ TRANSLATIONS = {
         "header": "DocumentRAG — Chat with your PDF",
         "sidebar_title": "Your Documents",
         "uploader_label": "Upload your PDF here",
-        "uploader_help": "One PDF at a time. Uploading a new file replaces the current one.",
         "uploader_caption": "📄 One PDF at a time — a new upload replaces the current document.",
         "upload_prompt": "Upload a PDF in the sidebar to get started.",
         "indexing": "Indexing your document...",
         "missing_env": "Missing required .env value(s): {names}. Add them to your .env file.",
         "scanned_pdf": "No extractable text found — this looks like a scanned or image-only PDF.",
         "index_failed": "Failed to index the document: {error}",
+        "retry": "🔄 Retry indexing",
         "question_label": "Ask a question about your document",
         "ask_button": "Ask",
         "answer_failed": "Couldn't get an answer: {error}",
@@ -65,18 +65,44 @@ TRANSLATIONS = {
         "header": "DocumentRAG — PDFと対話するチャットボット",
         "sidebar_title": "ドキュメント",
         "uploader_label": "PDFをここにアップロード",
-        "uploader_help": "一度に1つのPDFのみ。新しいファイルをアップロードすると、現在のPDFと置き換わります。",
         "uploader_caption": "📄 一度に1つのPDFのみ — 新しいアップロードで現在のドキュメントと置き換わります。",
         "upload_prompt": "サイドバーからPDFをアップロードして始めましょう。",
         "indexing": "ドキュメントをインデックス化しています...",
         "missing_env": "必須の .env 値が不足しています: {names}。.env ファイルに追加してください。",
         "scanned_pdf": "抽出可能なテキストが見つかりません — スキャン画像のみのPDFのようです。",
         "index_failed": "ドキュメントのインデックス作成に失敗しました: {error}",
+        "retry": "🔄 インデックスを再試行",
         "question_label": "ドキュメントについて質問してください",
         "ask_button": "質問する",
         "answer_failed": "回答を取得できませんでした: {error}",
     },
 }
+
+# Streamlit's file-uploader dropzone text ("Drag and drop file here", the size limit, and
+# the "Browse files" button) is English-only with no Python API. When the UI is Japanese we
+# override it via CSS by hiding the built-in text and injecting Japanese through pseudo-
+# elements. These selectors target Streamlit's internal DOM (test-ids), so they may need a
+# tweak if a future Streamlit release changes the uploader markup.
+UPLOADER_JA_CSS = """
+<style>
+[data-testid='stFileUploaderDropzoneInstructions'] div span { display: none; }
+[data-testid='stFileUploaderDropzoneInstructions'] div::before {
+    content: 'ここにPDFをドラッグ＆ドロップ';
+    display: block;
+}
+[data-testid='stFileUploaderDropzoneInstructions'] div small { display: none; }
+[data-testid='stFileUploaderDropzoneInstructions'] div::after {
+    content: '1ファイル200MBまで • PDF';
+    display: block;
+    font-size: 0.8rem;
+}
+[data-testid='stFileUploaderDropzone'] button { font-size: 0; }
+[data-testid='stFileUploaderDropzone'] button::after {
+    content: 'ファイルを選択';
+    font-size: 0.875rem;
+}
+</style>
+"""
 
 
 def extract_text(file) -> str:
@@ -144,6 +170,22 @@ def build_chain(retriever):
 
 
 def main() -> None:
+    # Page styling:
+    # - widen the sidebar a little from its default initial width;
+    # - the language selectbox is a searchable field, so it shows a text cursor and a
+    #   blinking caret (as if you could type) — force a pointer cursor and hide the caret
+    #   so the switcher reads as a plain clickable dropdown.
+    st.markdown(
+        "<style>"
+        "[data-testid='stSidebar'] { min-width: 320px; width: 320px; }"
+        "[data-testid='stHeading'] h2 { white-space: nowrap; }"
+        "div[data-baseweb='select'] > div,"
+        "div[data-baseweb='select'] > div * { cursor: pointer; }"
+        "div[data-baseweb='select'] input { caret-color: transparent; }"
+        "</style>",
+        unsafe_allow_html=True,
+    )
+
     # Language switcher, pinned to the top-right of the page.
     _, lang_col = st.columns([5, 1])
     with lang_col:
@@ -156,6 +198,10 @@ def main() -> None:
         )
     t = TRANSLATIONS[lang]
 
+    # Streamlit's uploader strings are English-only; override them for the JA UI via CSS.
+    if lang == "ja":
+        st.markdown(UPLOADER_JA_CSS, unsafe_allow_html=True)
+
     st.header(t["header"])
 
     with st.sidebar:
@@ -163,13 +209,21 @@ def main() -> None:
         file = st.file_uploader(
             t["uploader_label"],
             type=["pdf"],
-            help=t["uploader_help"],
+            # Stable key so switching language (which changes the label) doesn't make
+            # Streamlit treat this as a new widget and drop the uploaded PDF.
+            key="pdf_uploader",
         )
         st.caption(t["uploader_caption"])
 
+    # Render the prompt into a placeholder so it can be cleared the instant a file is
+    # uploaded. Otherwise Streamlit leaves the previous run's prompt on screen (dimmed)
+    # for the whole blocking indexing call, since that slot isn't re-rendered until the
+    # run finishes — emptying it here pushes the clear to the browser right away.
+    prompt_box = st.empty()
     if file is None:
-        st.info(t["upload_prompt"])
+        prompt_box.info(t["upload_prompt"])
         return
+    prompt_box.empty()
 
     missing = [
         name
@@ -192,7 +246,14 @@ def main() -> None:
         st.error(t["scanned_pdf"])
         return
     except Exception as e:  # embedding/index failure: API error, bad key or model, etc.
-        st.error(t["index_failed"].format(error=e))
+        # Often transient (rate limit, network) — let the user re-run the indexing.
+        # The error goes in a placeholder so clicking retry clears it before re-indexing.
+        error_box = st.empty()
+        if st.button(t["retry"]):
+            build_retriever.clear()
+            st.rerun()
+        else:
+            error_box.error(t["index_failed"].format(error=e))
         return
 
     with st.form("ask"):
