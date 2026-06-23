@@ -1,0 +1,10 @@
+streamlit==1.55.0
+pdfplumber==0.11.9
+langchain==1.2.10
+langchain-google-genai==4.2.1
+langchain-openai==1.1.11
+langchain-community==0.4.1
+langchain-core==1.2.18
+langchain-text-splitters==1.1.1
+faiss-cpu==1.13.2
+python-dotenv==1.2.2
