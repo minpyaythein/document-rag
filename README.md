@@ -13,6 +13,28 @@ for answers and Google Gemini embeddings over a FAISS vector store, in one `main
 
 ---
 
+## Why I built this
+
+I built DocumentRAG primarily as a **learning project** — to understand how
+retrieval-augmented generation actually works end to end, not just in theory. Putting it
+together taught me:
+
+- **RAG from the ground up** — chunking, embeddings, vector similarity search, and grounding
+  an LLM in retrieved context so it answers from a source instead of making things up.
+- **LangChain (LCEL)** — composing a `retriever → prompt → LLM → parser` pipeline with the `|`
+  pipe, and streaming tokens out of it.
+- **Vector search with FAISS** — turning text into embeddings and querying them in-memory.
+- **Wiring multiple providers** — running an OpenAI-compatible chat model (Z.AI GLM) and
+  Google Gemini embeddings in one app, and seeing how a clean abstraction keeps them swappable.
+- **Prompt design for grounding** — writing a system prompt that keeps the model honest about
+  what is (and isn't) in the document.
+- **Building a real Streamlit app** — caching expensive work, session state, forms, live token
+  streaming, and a bilingual (EN/JA) UI.
+- **Production-minded details** — config via `.env`, reproducible installs with `uv`, and
+  handling messy inputs (scanned PDFs, API failures) gracefully.
+
+---
+
 ## Features
 
 - **PDF Q&A** — upload a PDF in the sidebar and ask questions about it in plain language.
