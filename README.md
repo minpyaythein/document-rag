@@ -48,6 +48,9 @@ together taught me:
   and doesn't re-spend on the same document.
 - **Bilingual UI (EN/JA)** — switch the whole interface between English and 日本語 from the
   language selector in the top-right corner.
+- **Public-deploy guardrails** — a 2MB upload cap plus per-IP rate limits (PDFs per window and
+  questions per PDF), shown live in a sidebar usage meter. The limits are held server-side, so
+  a page reload doesn't reset them; the uploader locks and auto-unlocks when the window frees.
 
 ---
 
@@ -98,6 +101,14 @@ GOOGLE_API_KEY=your-gemini-api-key
 | `GOOGLE_API_KEY` | yes | Google Gemini API key — used for embeddings. Loaded from `.env`. |
 
 > `.env` is git-ignored — never commit real keys.
+
+### Deployment config
+
+`.streamlit/config.toml` holds the public-facing guardrails: `maxUploadSize = 2` (MB cap) and
+`toolbarMode = "minimal"` (hides Streamlit's Deploy button). The rate-limit numbers are
+constants at the top of `main.py` — `MAX_UPLOADS_PER_WINDOW`, `MAX_QUESTIONS_PER_PDF`, and
+`UPLOAD_WINDOW_SECONDS`. The intended host is **Render** (free tier): Streamlit needs a
+long-lived server, and the app is stateless (in-memory FAISS), so no database is required.
 
 ---
 

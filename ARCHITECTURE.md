@@ -174,7 +174,65 @@ A few things are happening here:
 
 ---
 
-## 6. Configuration
+## 6. Rate limiting & deploy guardrails
+
+Made public-deploy-ready (target: **Render** free tier) without a database. Three concerns:
+cap upload size, cap API spend, and hide Streamlit's dev chrome.
+
+### 6a. Server-side, IP-keyed rate limiter — *the reload-proof part*
+
+The naive approach — counting in `st.session_state` — resets the moment the user reloads the
+page, because a reload starts a fresh session. So the limiter state lives in the **server
+process** instead: a single dict returned by `@st.cache_resource` (one object shared across
+*all* sessions and reruns), keyed by client IP. It's a direct port of the portfolio site's
+in-memory `rate-limit.ts` — the same fixed-window `{count, reset_at}` buckets and IP keying.
+
+```python
+@st.cache_resource
+def _rate_state() -> dict:          # one map, process-wide (survives reloads)
+    return {"buckets": {}, "last_prune": 0.0}
+
+def consume_limit(state, key, limit, window, now) -> bool:
+    bucket = state["buckets"].get(key)
+    if bucket is None or bucket["reset_at"] <= now:
+        state["buckets"][key] = {"count": 1, "reset_at": now + window}
+        return True                  # fresh/expired window → new bucket
+    if bucket["count"] >= limit:
+        return False                 # full → reject
+    bucket["count"] += 1
+    return True
+```
+
+Two caps, two bucket namespaces: `upload:{ip}` (PDFs per window) and `q:{ip}:{file_id}`
+(questions per document per window). The client key prefers `X-Forwarded-For` (set by Render's
+proxy, stable across reloads); with no proxy (local dev) it falls back to a random id parked
+in the **URL query string** — which survives a reload, where `st.session_state` would not (a
+reload starts a fresh session, so a session-based key would silently reset the limit). Upload
+slots are consumed **before** embedding (the
+costly step); question slots at submit (each attempt is a billed call, so a stopped answer
+still counts). A read-only `peek_limit` drives the live usage meter without spending a slot.
+
+**Why it survives a reload:** the buckets are in server memory, not the session. To get past
+the cap a user must re-upload — which itself spends an upload slot from the same IP bucket.
+
+### 6b. Dropzone lock + auto-unlock
+
+At the cap, only the uploader's **dropzone** (Browse + drag-drop) is locked, via injected CSS
+— *not* `file_uploader(disabled=True)`, which would also disable the file's remove (×) button
+and trap the current PDF on screen. Because Streamlit only reruns on interaction, a locked
+uploader would stay locked after the window frees up; an invisible `@st.fragment(run_every=
+"2s")` polls and fires `st.rerun(scope="app")` the instant the cooldown ends, so the dropzone
+re-enables on its own with no click. The count drives both the lock and the meter in one render.
+
+### 6c. Config (`.streamlit/config.toml`)
+
+`maxUploadSize = 2` (MB) is the hard stop against a large PDF OOM-killing Render's 512MB free
+dyno; `toolbarMode = "minimal"` hides the Deploy button. The rate-limit numbers are constants
+in `main.py` (`MAX_UPLOADS_PER_WINDOW`, `MAX_QUESTIONS_PER_PDF`, `UPLOAD_WINDOW_SECONDS`).
+
+---
+
+## 7. Configuration
 
 All tunables live as module-level constants at the top of `main.py`, so behavior
 changes in one place: `CHUNK_SIZE`, `CHUNK_OVERLAP`, `EMBEDDING_MODEL`, `CHAT_MODEL`
@@ -188,7 +246,7 @@ for the bilingual interface, with the language picked by a top-right selector.
 
 ---
 
-## 7. Likely interview Q&A — quick-fire
+## 8. Likely interview Q&A — quick-fire
 
 | Question | One-line answer |
 |---|---|
@@ -201,10 +259,11 @@ for the bilingual interface, with the language picked by a top-right selector.
 | "Can you stop a long answer?" | Yes — the Stop button. Clicking a widget mid-run makes Streamlit abort and rerun, which interrupts `write_stream`; a wrapper saves the partial answer to session state so it isn't lost. |
 | "How is the UI bilingual?" | A `TRANSLATIONS` dict keyed `en`/`ja`; a top-right selector sets `st.session_state["lang"]` and every label/message renders through it. Streamlit has no built-in i18n, so the strings are kept in-app. |
 | "How would you scale it?" | Persist the index (e.g. pgvector/Chroma), support multiple/large docs, add conversation memory, and cite which chunks an answer came from. |
+| "How do you rate-limit without a DB?" | Fixed-window counters in a process-global `@st.cache_resource` dict keyed by client IP — server-side, so a page reload doesn't reset them. Ported from the portfolio's in-memory limiter. |
 
 ---
 
-## 8. The honest trade-offs (say these *before* you're asked)
+## 9. The honest trade-offs (say these *before* you're asked)
 
 1. **Single-turn, no memory.** Each question is independent — there's no conversation
    history. The latest answer is kept in session state (so it survives reruns and a Stop),
@@ -221,3 +280,7 @@ for the bilingual interface, with the language picked by a top-right selector.
 6. **Two providers, two keys.** Chat (Z.AI) and embeddings (Gemini) are separate
    services — two API keys, two points of failure. Fine for a small app; using one
    provider for both would simplify ops.
+7. **Rate limits are in-memory and IP-keyed.** They survive page reloads (server-side state)
+   but reset when the process restarts — e.g. a Render free dyno waking from sleep — and IP
+   keying is coarse: users behind one NAT share a budget, a new IP/VPN bypasses it. A shared
+   store (Upstash Redis) is the upgrade if traffic ever warrants it.

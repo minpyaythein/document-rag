@@ -1,0 +1,8 @@
+[server]
+# Cap uploads well under Render free's 512MB RAM. A 2MB text PDF is already a long
+# document, and this is the hard stop against an oversized file OOM-killing the dyno.
+maxUploadSize = 2
+
+[client]
+# Hide Streamlit's dev chrome (the top-right "Deploy" button and menu) on the public deploy.
+toolbarMode = "minimal"

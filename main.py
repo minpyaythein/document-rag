@@ -1,5 +1,7 @@
 import io
 import os
+import time
+import uuid
 
 import pdfplumber
 import streamlit as st
@@ -28,6 +30,16 @@ TEMPERATURE = 0.3
 MAX_TOKENS = 1024
 # GLM-5.2 is a reasoning model; disable the thinking trace for faster first-token latency.
 THINKING = {"type": "disabled"}
+
+# --- Rate limiting (public-deploy guardrails) ---
+# Fixed-window limits kept server-side and keyed by client IP (see `_rate_state` /
+# `consume_limit`), mirroring the portfolio site's in-memory limiter. Because the state lives
+# in the Streamlit *server process* rather than in st.session_state, a browser reload — which
+# starts a fresh session — can't reset it. It resets only when the process restarts (e.g. the
+# Render dyno waking from sleep). Both caps share one window for simplicity.
+UPLOAD_WINDOW_SECONDS = 1 * 60  # TEST VALUE — bump back up (e.g. 15 * 60) for production
+MAX_UPLOADS_PER_WINDOW = 1  # TEST VALUE — PDFs indexed per IP per window
+MAX_QUESTIONS_PER_PDF = 1  # TEST VALUE — questions per PDF (per IP) per window
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant answering questions about a PDF document.\n\n"
@@ -63,6 +75,11 @@ TRANSLATIONS = {
         "thinking": "Generating your answer...",
         "stop_button": "⏹ Stop",
         "answer_failed": "Couldn't get an answer: {error}",
+        "limits_header": "📊 Usage limits",
+        "usage_pdfs": "Uploads: {used} of {max} used · resets every {minutes} min",
+        "usage_questions": "Questions: {used} of {max} used on this PDF",
+        "limit_pdfs": "⏳ Upload limit reached — {max} per {minutes} min. Try again in ~{wait} min.",
+        "limit_questions": "⏳ Question limit reached — {max} per PDF. Upload a new PDF to keep going.",
     },
     "ja": {
         "header": "DocumentRAG — PDFと対話するチャットボット",
@@ -80,6 +97,11 @@ TRANSLATIONS = {
         "thinking": "回答を生成しています...",
         "stop_button": "⏹ 停止",
         "answer_failed": "回答を取得できませんでした: {error}",
+        "limits_header": "📊 利用制限",
+        "usage_pdfs": "アップロード: {max}件中{used}件使用 · {minutes}分ごとにリセット",
+        "usage_questions": "質問: {max}問中{used}問使用（このPDF）",
+        "limit_pdfs": "⏳ アップロード上限に達しました — {minutes}分あたり{max}件まで。約{wait}分後に再試行してください。",
+        "limit_questions": "⏳ 質問の上限に達しました — PDFごとに{max}問まで。続けるには新しいPDFをアップロードしてください。",
     },
 }
 
@@ -97,7 +119,7 @@ UPLOADER_JA_CSS = """
 }
 [data-testid='stFileUploaderDropzoneInstructions'] div small { display: none; }
 [data-testid='stFileUploaderDropzoneInstructions'] div::after {
-    content: '1ファイル200MBまで • PDF';
+    content: '1ファイル2MBまで • PDF';
     display: block;
     font-size: 0.8rem;
 }
@@ -108,6 +130,96 @@ UPLOADER_JA_CSS = """
 }
 </style>
 """
+
+# When the upload cap is hit, lock only the dropzone (the Browse button + drag-and-drop) so a
+# new file can't be picked. We do this with CSS rather than file_uploader(disabled=True),
+# which would also disable the uploaded file's "remove" (×) button — the × sits outside the
+# dropzone, so it stays clickable here and the current PDF can still be cleared.
+UPLOADER_LOCKED_CSS = """
+<style>
+[data-testid='stFileUploaderDropzone'] {
+    pointer-events: none;
+    opacity: 0.5;
+}
+</style>
+"""
+
+
+# --- Server-side rate limiter (IP-keyed, fixed window) ---
+# Direct port of the portfolio site's `rate-limit.ts`: a process-global bucket map that
+# survives browser reloads because it lives in the server, not the client session.
+
+
+@st.cache_resource
+def _rate_state() -> dict:
+    """One bucket map shared across every session and rerun (the server-side store).
+
+    `@st.cache_resource` returns the same object process-wide — the Streamlit equivalent of
+    the portfolio limiter's module-level `const buckets = new Map()`.
+    """
+    return {"buckets": {}, "last_prune": 0.0}
+
+
+def _prune(state: dict, now: float) -> None:
+    """Drop expired buckets occasionally so the map doesn't grow forever."""
+    if now - state["last_prune"] < 60:
+        return
+    state["last_prune"] = now
+    state["buckets"] = {
+        key: b for key, b in state["buckets"].items() if b["reset_at"] > now
+    }
+
+
+def peek_limit(state: dict, key: str, now: float) -> tuple[int, float]:
+    """Return (used, reset_at) for the active window, or (0, 0.0) if none/expired.
+
+    Read-only — used to render the usage meter without consuming a slot.
+    """
+    bucket = state["buckets"].get(key)
+    if bucket is None or bucket["reset_at"] <= now:
+        return 0, 0.0
+    return bucket["count"], bucket["reset_at"]
+
+
+def consume_limit(state: dict, key: str, limit: int, window: float, now: float) -> bool:
+    """Consume one slot from a fixed window. Returns True if allowed (and increments).
+
+    Mirrors the portfolio's `checkRateLimit`: a fresh/expired window starts a new bucket;
+    a full one is rejected; otherwise the count ticks up.
+    """
+    buckets = state["buckets"]
+    bucket = buckets.get(key)
+    if bucket is None or bucket["reset_at"] <= now:
+        buckets[key] = {"count": 1, "reset_at": now + window}
+        _prune(state, now)
+        return True
+    if bucket["count"] >= limit:
+        return False
+    bucket["count"] += 1
+    return True
+
+
+def client_id() -> str:
+    """Stable per-client key that survives a page reload.
+
+    Prefers the real IP behind a proxy — Render/Vercel set `X-Forwarded-For` — which is stable
+    across reloads. With no proxy (local dev) there's no such header, so we fall back to a
+    random id parked in the URL query string. Unlike `st.session_state` (a fresh session every
+    reload — which is exactly why the limit kept resetting), a query param rides along on F5,
+    so the same browser keeps the same bucket.
+    """
+    try:
+        headers = st.context.headers or {}
+        forwarded = headers.get("X-Forwarded-For") or headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    except Exception:
+        pass
+    rid = st.query_params.get("rid")
+    if not rid:
+        rid = uuid.uuid4().hex
+        st.query_params["rid"] = rid
+    return rid
 
 
 def extract_text(file) -> str:
@@ -250,6 +362,20 @@ def autoscroll() -> None:
     )
 
 
+@st.fragment(run_every="2s")
+def cooldown_refresh(deadline: float) -> None:
+    """Poll during an upload cooldown and rerun the whole app once it expires.
+
+    Streamlit only reruns on user interaction, so a locked uploader would stay locked after
+    its window frees up until the user clicks something. This invisible fragment ticks on a
+    timer and, when the deadline passes, triggers a full-app rerun — which prunes the expired
+    upload timestamp and re-enables the dropzone on its own. While the cooldown is still
+    running it does nothing, so the rest of the page isn't re-rendered.
+    """
+    if time.time() >= deadline:
+        st.rerun(scope="app")
+
+
 def main() -> None:
     # Page styling:
     # - widen the sidebar a little from its default initial width;
@@ -285,6 +411,16 @@ def main() -> None:
 
     st.header(t["header"])
 
+    # Pull the server-side, IP-keyed limiter state up front, before drawing the uploader, so
+    # the Browse button can be locked the moment the per-window cap is in effect.
+    store = _rate_state()
+    client = client_id()
+    now = time.time()
+    window_minutes = UPLOAD_WINDOW_SECONDS // 60
+    upload_key = f"upload:{client}"
+    uploads_used, uploads_reset = peek_limit(store, upload_key, now)
+    uploads_exhausted = uploads_used >= MAX_UPLOADS_PER_WINDOW
+
     with st.sidebar:
         st.title(t["sidebar_title"])
         file = st.file_uploader(
@@ -295,6 +431,14 @@ def main() -> None:
             key="pdf_uploader",
         )
         st.caption(t["uploader_caption"])
+        if uploads_exhausted:
+            # Budget already spent coming into this run (a prior upload, or the file was
+            # removed mid-cooldown) — lock the dropzone right away. The × stays usable since
+            # it sits outside the dropzone.
+            st.markdown(UPLOADER_LOCKED_CSS, unsafe_allow_html=True)
+        # Filled below once the current file is counted (the uploader is drawn before that
+        # happens, so on the first upload the lock state isn't known here yet).
+        upload_notice = st.empty()
 
     # Render the prompt into a placeholder so it can be cleared the instant a file is
     # uploaded. Otherwise Streamlit leaves the previous run's prompt on screen (dimmed)
@@ -302,6 +446,25 @@ def main() -> None:
     # run finishes — emptying it here pushes the clear to the browser right away.
     prompt_box = st.empty()
     if file is None:
+        if uploads_exhausted:
+            # Locked with nothing loaded — e.g. straight after a reload, where the uploader
+            # comes back empty but the IP's budget is still spent. We won't reach the main
+            # limit UI below (we return here), so explain the lock, show the meter, and keep
+            # the auto-unlock timer ticking right here.
+            wait = int((uploads_reset - now) // 60) + 1 if uploads_reset else 1
+            upload_notice.caption(
+                t["limit_pdfs"].format(
+                    max=MAX_UPLOADS_PER_WINDOW, minutes=window_minutes, wait=wait
+                )
+            )
+            st.sidebar.markdown(f"**{t['limits_header']}**")
+            st.sidebar.caption(
+                t["usage_pdfs"].format(
+                    used=uploads_used, max=MAX_UPLOADS_PER_WINDOW, minutes=window_minutes
+                )
+            )
+            if uploads_reset:
+                cooldown_refresh(uploads_reset)
         prompt_box.info(t["upload_prompt"])
         return
     prompt_box.empty()
@@ -318,6 +481,68 @@ def main() -> None:
     if missing:
         st.error(t["missing_env"].format(names=", ".join(missing)))
         return
+
+    # Ask/answer state. `asking` is on while an answer streams: the submit button renders
+    # disabled and a spinner shows. The answer (or error) is kept in session state so it
+    # survives the rerun that re-enables the button. `consumed_uploads` records which file_ids
+    # this session has already charged to the upload bucket, so reruns don't double-count.
+    st.session_state.setdefault("asking", False)
+    st.session_state.setdefault("answer", None)
+    st.session_state.setdefault("answer_error", None)
+    st.session_state.setdefault("consumed_uploads", set())
+
+    file_id = getattr(file, "file_id", None)
+
+    # A file_id this session hasn't charged yet is a fresh upload. The locked dropzone normally
+    # blocks a new pick once the cap is hit, but a file selected in the brief gap before the
+    # lock applies still lands here — so consume a slot *before* embedding (the costly step),
+    # which the server-side bucket rejects if the IP's budget is spent. Clear any prior answer.
+    if file_id not in st.session_state.consumed_uploads:
+        if not consume_limit(
+            store, upload_key, MAX_UPLOADS_PER_WINDOW, UPLOAD_WINDOW_SECONDS, now
+        ):
+            _, reset_at = peek_limit(store, upload_key, now)
+            wait = int((reset_at - now) // 60) + 1 if reset_at else 1
+            st.warning(
+                t["limit_pdfs"].format(
+                    max=MAX_UPLOADS_PER_WINDOW, minutes=window_minutes, wait=wait
+                )
+            )
+            return
+        st.session_state.consumed_uploads.add(file_id)
+        st.session_state.answer = None
+        st.session_state.answer_error = None
+        st.session_state.asking = False
+
+    # Re-read the buckets now that the current upload is counted, for the meter + lock.
+    uploads_used, uploads_reset = peek_limit(store, upload_key, now)
+    question_key = f"q:{client}:{file_id}"
+    questions_used, _ = peek_limit(store, question_key, now)
+
+    # Lock the dropzone (Browse + drag-drop) if the upload budget is spent — fires in the same
+    # render the "1 of 1 used" meter appears, even on the first upload (whose count lands after
+    # the uploader was drawn). CSS is global, so injecting here still styles the live uploader.
+    if uploads_used >= MAX_UPLOADS_PER_WINDOW:
+        st.markdown(UPLOADER_LOCKED_CSS, unsafe_allow_html=True)
+        wait = int((uploads_reset - now) // 60) + 1 if uploads_reset else 1
+        upload_notice.caption(
+            t["limit_pdfs"].format(
+                max=MAX_UPLOADS_PER_WINDOW, minutes=window_minutes, wait=wait
+            )
+        )
+        # Tick on a timer and auto-unlock the moment the window frees up, with no click needed.
+        if uploads_reset:
+            cooldown_refresh(uploads_reset)
+
+    st.sidebar.markdown(f"**{t['limits_header']}**")
+    st.sidebar.caption(
+        t["usage_pdfs"].format(
+            used=uploads_used, max=MAX_UPLOADS_PER_WINDOW, minutes=window_minutes
+        )
+    )
+    st.sidebar.caption(
+        t["usage_questions"].format(used=questions_used, max=MAX_QUESTIONS_PER_PDF)
+    )
 
     try:
         with st.spinner(t["indexing"]):
@@ -337,24 +562,17 @@ def main() -> None:
             error_box.error(t["index_failed"].format(error=e))
         return
 
-    # Ask/answer state. `asking` is on while an answer streams: the submit button renders
-    # disabled and a spinner shows. The answer (or error) is kept in session state so it
-    # survives the rerun that re-enables the button. A different PDF clears the last answer.
-    st.session_state.setdefault("asking", False)
-    st.session_state.setdefault("answer", None)
-    st.session_state.setdefault("answer_error", None)
-    file_id = getattr(file, "file_id", None)
-    if st.session_state.get("answered_file") != file_id:
-        st.session_state.answered_file = file_id
-        st.session_state.answer = None
-        st.session_state.answer_error = None
-        st.session_state.asking = False
+    limit_reached = questions_used >= MAX_QUESTIONS_PER_PDF
 
     with st.form("ask"):
         question = st.text_input(t["question_label"], key="question", autocomplete="off")
         submitted = st.form_submit_button(
-            t["ask_button"], disabled=st.session_state.asking
+            t["ask_button"], disabled=st.session_state.asking or limit_reached
         )
+    # Hold the limit notice until the answer has finished (or been stopped) — showing it
+    # mid-stream would flash up the moment the question is submitted.
+    if limit_reached and not st.session_state.asking:
+        st.warning(t["limit_questions"].format(max=MAX_QUESTIONS_PER_PDF))
 
     # While an answer streams, show a Stop button under the right of the box. Clicking it
     # is a widget interaction, so Streamlit interrupts the in-progress run (the streaming
@@ -371,11 +589,17 @@ def main() -> None:
     # First click: flip into the asking state and rerun so the button comes back disabled
     # before the blocking stream. The guard ignores reruns that aren't an explicit submit
     # (e.g. uploading a new PDF), so a stale question is never re-answered or re-billed.
-    if submitted and question and not st.session_state.asking:
-        st.session_state.asking = True
-        st.session_state.answer = None
-        st.session_state.answer_error = None
-        st.rerun()
+    if submitted and question and not st.session_state.asking and not limit_reached:
+        # Charge the question now (at submit) — each attempt fires a billed API call, so a
+        # stopped or failed answer still counts. consume_limit re-checks the cap server-side;
+        # if it just filled (a race on the same IP+PDF), skip and let the rerun show the limit.
+        if consume_limit(
+            store, question_key, MAX_QUESTIONS_PER_PDF, UPLOAD_WINDOW_SECONDS, now
+        ):
+            st.session_state.asking = True
+            st.session_state.answer = None
+            st.session_state.answer_error = None
+            st.rerun()
 
     answer_box = st.empty()
     if st.session_state.asking:

@@ -10,7 +10,7 @@ A specific, dated record of what was built and decided. Read this when picking u
 - **What it is**: a PDF Q&A chatbot — upload a PDF, ask questions, get answers grounded in it (RAG)
 - **Stack**: Streamlit 1.55 + LangChain 1.2.x (LCEL) + Z.AI GLM-5.2 (`langchain-openai`, chat) + Google Gemini (`langchain-google-genai`, embeddings) + FAISS (`faiss-cpu` 1.13.2), Python 3.11+ (dev on 3.14), `uv`
 - **Models**: chat `glm-5.2` via Z.AI (`temperature=0.3`, `max_tokens=1024`, thinking disabled); embeddings `models/gemini-embedding-001` via Gemini
-- **Hosting**: local only (`streamlit run main.py`) — not deployed
+- **Hosting**: local (`streamlit run main.py`); **Render** free tier is the chosen deploy target — guardrails added 2026-06-28, not yet pushed live
 - **Repo**: public — `github.com/minpyaythein/document-rag` (`origin/main`)
 
 ---
@@ -216,6 +216,51 @@ A pass on the ask/answer experience while a response streams:
   autofill dropdown.
 - **`local_setup.sh`** — convenience launcher: checks for `uv`, warns if `.env` is missing,
   runs `uv sync`, then `streamlit run main.py`.
+
+---
+
+## 2026-06-28: Public-deploy guardrails (rate limits, size cap, server-side state)
+
+Prep for a free-tier **Render** deploy (chosen host — Streamlit needs a long-lived server, so
+Vercel is out; the app is stateless, so no DB). Added cost/abuse guardrails without a database:
+
+- **`.streamlit/config.toml`** — `maxUploadSize = 2` (MB; was Streamlit's 200MB default — a
+  hard stop against OOM on Render's 512MB free dyno) and `toolbarMode = "minimal"` (hides the
+  Deploy button). Updated the JA uploader CSS text `200MB → 2MB` to match (the EN side reads
+  the cap from config automatically).
+- **Server-side, IP-keyed rate limiter** — fixed-window `{count, reset_at}` buckets in a
+  process-global `@st.cache_resource` dict, keyed by client IP (`X-Forwarded-For`, set by
+  Render's proxy). A direct port of the portfolio's
+  `server/utils/rate-limit.ts`. Two caps: PDFs per window (`upload:{ip}`) and questions per
+  PDF per window (`q:{ip}:{file_id}`). **Key win:** because the state is server-side, a browser
+  reload no longer resets the limits — the earlier `st.session_state` version did. Helpers:
+  `consume_limit` (≙ `checkRateLimit`), read-only `peek_limit` for the meter, `client_id`
+  (≙ `getClientIp`). Window logic verified with a standalone unit test (cap, reload-survival,
+  expiry, per-IP isolation).
+- **Reload-reset fix (local dev)** — first cut of `client_id` fell back to an id in
+  `st.session_state` when no proxy `X-Forwarded-For` was present, so locally every reload (a
+  new session) minted a new key and the limit appeared to reset. Fixed by parking the fallback
+  id in the **URL query string** (`?rid=...`) instead — it rides along on F5. On Render the
+  proxy IP is used directly, so this fallback only matters in local dev.
+- **Locked-but-empty UI fix** — after a reload the uploader comes back empty (`file is None`),
+  so `main()` returned early — before the lock caption and the auto-unlock fragment. Result:
+  dropzone locked with no reason shown and no auto re-enable. Fixed by rendering the cooldown
+  caption + uploads meter and scheduling `cooldown_refresh` inside the `file is None` branch
+  when the budget is spent.
+- **Live usage meter** — bilingual sidebar lines under a "📊 Usage limits" header
+  ("Uploads: X of Y · resets every N min", "Questions: X of Y on this PDF"), fed by `peek_limit`.
+- **Dropzone lock + auto-unlock** — at the cap, only the dropzone (Browse + drag-drop) is
+  locked via CSS (`UPLOADER_LOCKED_CSS`), so the file's × stays usable — unlike
+  `file_uploader(disabled=True)`, which disables the whole widget. An invisible
+  `@st.fragment(run_every="2s")` reruns the app when the cooldown expires, re-enabling Browse
+  with no click. The post-count lock fires in the same render as the meter, so they never desync.
+- **State move** — `st.session_state` no longer holds the limits; it keeps only
+  `consumed_uploads` (a per-session dedup set so reruns don't double-charge an upload).
+- **Currently dialed to TEST VALUES** in `main.py` (1 PDF / 1 question / 60s window) for
+  testing — flip the three `# TEST VALUE` constants to `2 / 10 / 15*60` for production.
+- **Caveats** (same as the portfolio's, already documented there): in-memory resets on a dyno
+  restart/sleep; IP keying is coarse (NAT shares a budget, VPN bypasses). Upgrade path noted:
+  Upstash Redis if traffic grows.
 
 ---
 
