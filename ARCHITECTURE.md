@@ -134,22 +134,43 @@ fetches + formats chunks into `{context}` while the raw question passes through 
 `{question}`. Both fill the prompt template, GLM-5.2 answers, and `StrOutputParser`
 strips the response down to a plain string.
 
-### 5c. Streaming UX (`st.write_stream` + a form)
+### 5c. Streaming UX — form, busy state, and a Stop button
 
 ```python
 with st.form("ask"):
-    question = st.text_input("Ask a question about your document")
-    submitted = st.form_submit_button("Ask")
+    question = st.text_input("…", key="question")
+    submitted = st.form_submit_button("Ask", disabled=st.session_state.asking)
 
-if submitted and question:
-    st.write_stream(chain.stream(question))
+# Stop button (shown only while streaming) interrupts the run below.
+if st.session_state.asking and stop:
+    st.session_state.asking = False
+    st.rerun()
+
+if st.session_state.asking:
+    st.write_stream(capture_answer(chain.stream(st.session_state.question)))
 ```
 
-`chain.stream()` yields the answer token-by-token as GLM-5.2 generates it, and
-`st.write_stream` renders each token live — real streaming, not a cosmetic typewriter.
-Wrapping the input in a **form** means the chain only runs on an explicit submit, so an
-unrelated rerun (like uploading a new PDF) never re-answers a stale question or re-bills
-the API.
+A few things are happening here:
+
+- **Real streaming** — `chain.stream()` yields tokens as GLM-5.2 generates them and
+  `st.write_stream` renders each live, not a cosmetic typewriter.
+- **Submit-only** — wrapping the box in a **form** means the chain runs only on an explicit
+  submit, so an unrelated rerun (uploading a new PDF) never re-answers a stale question or
+  re-bills the API.
+- **Busy state** — clicking Ask flips an `asking` flag and reruns, so the button re-renders
+  **disabled** with a spinner. A generator holds the spinner open only until the first token,
+  then clears it as the answer rolls in.
+- **Stop = a deliberate interrupt.** Streamlit runs one script at a time, but *clicking any
+  widget while a run is in flight makes it abort that run and rerun.* The Stop button
+  weaponises exactly that: the click interrupts the blocking `write_stream`, and the rerun
+  lands with the click registered, where the `asking` flag is dropped. `capture_answer` saves
+  each token to session state as it streams, so the **partial answer survives** the interrupt
+  instead of vanishing. (One catch: Streamlit signals the abort with an internal exception, so
+  the `except` around streaming re-raises control-flow exceptions rather than mistaking them
+  for an LLM error.)
+- **Auto-scroll** — a 0-height `components.html` iframe runs a script that scrolls the main
+  container (`[data-testid="stMain"]`, *not* the window) to the bottom as tokens arrive,
+  pausing if you scroll up. `st.markdown` can't do this — it strips `<script>`.
 
 ---
 
@@ -177,6 +198,7 @@ for the bilingual interface, with the language picked by a top-right selector.
 | "Why chunk overlap?" | So meaning isn't lost at hard split boundaries — adjacent chunks share 200 chars. |
 | "What's the performance gotcha?" | Streamlit reruns the whole script per interaction; `@st.cache_resource` stops the PDF being re-embedded every question. |
 | "Is it real token streaming?" | Yes — `chain.stream()` yields tokens and `st.write_stream` renders them live as GLM-5.2 generates them. |
+| "Can you stop a long answer?" | Yes — the Stop button. Clicking a widget mid-run makes Streamlit abort and rerun, which interrupts `write_stream`; a wrapper saves the partial answer to session state so it isn't lost. |
 | "How is the UI bilingual?" | A `TRANSLATIONS` dict keyed `en`/`ja`; a top-right selector sets `st.session_state["lang"]` and every label/message renders through it. Streamlit has no built-in i18n, so the strings are kept in-app. |
 | "How would you scale it?" | Persist the index (e.g. pgvector/Chroma), support multiple/large docs, add conversation memory, and cite which chunks an answer came from. |
 
@@ -185,8 +207,8 @@ for the bilingual interface, with the language picked by a top-right selector.
 ## 8. The honest trade-offs (say these *before* you're asked)
 
 1. **Single-turn, no memory.** Each question is independent — there's no conversation
-   history, and the answer clears on the next interaction (it isn't persisted). A chat
-   history layer would be the next step.
+   history. The latest answer is kept in session state (so it survives reruns and a Stop),
+   but only one at a time; a chat history layer would be the next step.
 2. **In-memory FAISS, session-scoped.** The index lives in the Streamlit cache and
    dies with the process. Fine for "ask one PDF"; a persistent store is needed to
    reuse documents across sessions or users.

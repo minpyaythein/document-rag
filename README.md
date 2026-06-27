@@ -40,7 +40,10 @@ together taught me:
 - **PDF Q&A** — upload a PDF in the sidebar and ask questions about it in plain language.
 - **Grounded answers** — the model answers *only* from the document and says so when the
   answer isn't there, so it doesn't make things up.
-- **Streamed responses** — answers stream in token-by-token as the model generates them.
+- **Streamed responses** — answers stream in token-by-token as the model generates them,
+  and the page auto-scrolls to follow along (it pauses if you scroll up).
+- **Stop anytime** — interrupt a long answer mid-stream with the Stop button; whatever was
+  generated so far stays on screen.
 - **Index once, not per question** — embedding is cached on the file, so re-asking is fast
   and doesn't re-spend on the same document.
 - **Bilingual UI (EN/JA)** — switch the whole interface between English and 日本語 from the
@@ -67,8 +70,11 @@ together taught me:
 **Prerequisites:** Python 3.11+ and [uv](https://docs.astral.sh/uv/) (or pip). Runs locally.
 
 ```bash
+./local_setup.sh         # sync deps + launch — opens http://localhost:8501
+
+# …or do it by hand:
 uv sync
-streamlit run main.py    # opens http://localhost:8501
+streamlit run main.py
 
 # or with pip:
 pip install -r requirements.txt

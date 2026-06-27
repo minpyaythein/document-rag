@@ -25,6 +25,9 @@ retrieval-augmented generation (RAG), then streams the answer back token-by-toke
 # Run the app
 streamlit run main.py
 
+# …or the convenience launcher (uv sync + run, with .env check)
+./local_setup.sh
+
 # Install dependencies (uv is the package manager, Python 3.11+)
 uv sync
 
@@ -42,7 +45,10 @@ Single-file app (`main.py`), organized into small functions:
    so the document isn't re-embedded on every Streamlit rerun.
 3. `build_chain` — wires `retriever -> prompt -> Z.AI GLM (ChatOpenAI) -> StrOutputParser`
 4. `main` — Streamlit UI flow: pick language (top-right selector) → upload → (cached) index
-   → ask via an `st.form` → stream the answer live with `st.write_stream(chain.stream(...))`
+   → ask via an `st.form` → stream the answer live with `st.write_stream(chain.stream(...))`.
+   While streaming, the Ask button is disabled and a Stop button can interrupt the run (the
+   answer is kept in `st.session_state`); a 0-height `components.html` iframe auto-scrolls the
+   page to follow the tokens.
 
 Configuration (chunk size/overlap, model names, temperature, system prompt) lives in
 module-level constants at the top of `main.py`.

@@ -188,6 +188,37 @@ Follow-up pass after i18n landed — styling plus a few state/rendering fixes:
 
 ---
 
+## 2026-06-28: Streaming UX — busy state, Stop button, auto-scroll
+
+A pass on the ask/answer experience while a response streams:
+- **Busy state** — clicking Ask flips an `st.session_state["asking"]` flag and reruns, so the
+  submit button re-renders **disabled** while the answer streams. The "Generating your
+  answer..." spinner is held open only until the first token (a `stream_with_thinking`
+  generator pulls the first chunk under the spinner, then exits), so it clears the instant
+  text starts rolling instead of lingering for the whole response.
+- **Stop button** — a right-aligned Stop button appears under the box while streaming and
+  interrupts generation. It leans on Streamlit's model: clicking any widget mid-run aborts the
+  running script and reruns. A `capture_answer` generator writes each token to
+  `st.session_state["answer"]` as it streams, so the **partial answer survives** the interrupt.
+  The `except` around `st.write_stream` re-raises Streamlit's control-flow exceptions
+  (`RerunException`/`StopException`) so the abort isn't mistaken for an LLM error.
+- **Answer persisted** — the latest answer/error lives in session state (cleared on a new
+  question or a new PDF, tracked via the uploaded file's id), so it survives the rerun that
+  re-enables the button. (Updates ARCHITECTURE trade-off #1, which previously said answers
+  weren't persisted.)
+- **Auto-scroll** — the page now follows the streamed text down. A 0-height `components.html`
+  iframe scrolls the main scroll container (`[data-testid="stMain"]`, *not* the window) to the
+  bottom on a short interval, pausing if the user scrolls up and resuming at the bottom.
+  Verified against the installed Streamlit that the component iframe is `allow-same-origin`
+  (so it can reach the parent page) and that `stMain` is the real scroller — the earlier
+  window-scroll attempt did nothing.
+- **`autocomplete="off"`** on the question box (native `st.text_input` param) — no browser
+  autofill dropdown.
+- **`local_setup.sh`** — convenience launcher: checks for `uv`, warns if `.env` is missing,
+  runs `uv sync`, then `streamlit run main.py`.
+
+---
+
 ## Frozen facts (keep consistent everywhere)
 
 - **Chat model**: set via `ZAI_MODEL` in `.env` (e.g. `glm-5.2`), through Z.AI, endpoint `https://api.z.ai/api/coding/paas/v4` (`temperature=0.3`, `max_tokens=1024`)
