@@ -68,7 +68,7 @@ TURNSTILE_GATE_INJECTOR = """
       "var u=new URL(window.location.href);" +
       "u.searchParams.set('cf_token',tok);" +
       // Brief pause so Turnstile's success checkmark fully draws before we navigate away.
-      "setTimeout(function(){window.location.href=u.toString();},1400);};" +
+      "setTimeout(function(){window.location.href=u.toString();},1200);};" +
       "window.__cfMount=function(){var s=document.getElementById('cf-slot');" +
       "if(s&&!document.getElementById('cf-widget')){" +
       "var w=document.createElement('div');w.id='cf-widget';s.appendChild(w);" +
@@ -132,6 +132,7 @@ TRANSLATIONS = {
         "gate_header": "Quick check before you continue",
         "gate_caption": "Confirm you're human to access DocumentRAG.",
         "gate_failed": "Verification failed — please try again.",
+        "verifying": "Verifying… one moment.",
         "header": "DocumentRAG — Chat with your PDF",
         "sidebar_title": "Your Documents",
         "uploader_label": "Upload your PDF here",
@@ -157,6 +158,7 @@ TRANSLATIONS = {
         "gate_header": "続行する前に簡単な確認",
         "gate_caption": "DocumentRAGにアクセスするには、あなたが人間であることを確認してください。",
         "gate_failed": "確認に失敗しました — もう一度お試しください。",
+        "verifying": "確認しています… 少々お待ちください。",
         "header": "DocumentRAG — PDFと対話するチャットボット",
         "sidebar_title": "ドキュメント",
         "uploader_label": "PDFをここにアップロード",
@@ -530,11 +532,14 @@ def main() -> None:
         token = st.query_params.get("cf_token")
         if token:
             # One-time token — consume it from the URL whatever the outcome, then rerun.
-            if verify_turnstile(token):
-                st.session_state.turnstile_ok = True
-                st.session_state.turnstile_failed = False
-            else:
-                st.session_state.turnstile_failed = True
+            # Paint a "Verifying…" notice first so the blocking siteverify call + the rerun
+            # that follows don't leave the page blank while the token is checked.
+            with st.spinner(TRANSLATIONS[st.session_state.get("lang", "en")]["verifying"]):
+                if verify_turnstile(token):
+                    st.session_state.turnstile_ok = True
+                    st.session_state.turnstile_failed = False
+                else:
+                    st.session_state.turnstile_failed = True
             del st.query_params["cf_token"]
             st.rerun()
         render_turnstile_gate(TRANSLATIONS[st.session_state.get("lang", "en")])
