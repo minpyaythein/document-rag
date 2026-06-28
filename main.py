@@ -1,6 +1,9 @@
 import io
+import json
 import os
 import time
+import urllib.parse
+import urllib.request
 import uuid
 
 import pdfplumber
@@ -31,6 +34,72 @@ MAX_TOKENS = 1024
 # GLM-5.2 is a reasoning model; disable the thinking trace for faster first-token latency.
 THINKING = {"type": "disabled"}
 
+# --- Cloudflare Turnstile (human-verification gate) ---
+# A dedicated widget for this app — separate sitekey/secret from the portfolio site, so each
+# project keeps its own hostname allowlist and analytics. The gate is enforced only when BOTH
+# keys are set; with neither set, bare local dev runs ungated. Add the keys to .env to test it.
+TURNSTILE_SITE_KEY = os.getenv("TURNSTILE_SITE_KEY")
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY")
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+# Turnstile must run in the MAIN page, not the component's sandboxed iframe: that iframe is
+# sandboxed without top-navigation, so a success callback *defined inside it* can't point the
+# parent at a new URL (the browser attributes the navigation to the sandboxed context and
+# blocks it). So this 0-height injector — which runs in the iframe — reaches into the parent
+# (same-origin) and appends the widget, the Turnstile API, and the callback there, as
+# parent-realm <script> source. Running in the parent's realm, the callback's normal page
+# navigation (which carries the one-time token in `cf_token`) is no longer sandboxed.
+# `__SITEKEY__` is substituted at render time; `#cf-slot` is the mount point drawn just above.
+TURNSTILE_GATE_INJECTOR = """
+<script>
+(function () {
+  var pwin = window.parent;
+  var pdoc = pwin.document;
+  var slot = pdoc.getElementById('cf-slot');
+  if (!slot) return;
+
+  // Callback + mount helper injected as parent-realm source so the navigation in
+  // onTurnstileSuccess runs un-sandboxed. Added once; survives Streamlit reruns.
+  if (!pdoc.getElementById('cf-cb')) {
+    var cb = pdoc.createElement('script');
+    cb.id = 'cf-cb';
+    cb.textContent =
+      "window.onTurnstileSuccess=function(tok){" +
+      "var u=new URL(window.location.href);" +
+      "u.searchParams.set('cf_token',tok);" +
+      // Brief pause so Turnstile's success checkmark fully draws before we navigate away.
+      "setTimeout(function(){window.location.href=u.toString();},1500);};" +
+      "window.__cfMount=function(){var s=document.getElementById('cf-slot');" +
+      "if(s&&!document.getElementById('cf-widget')){" +
+      "var w=document.createElement('div');w.id='cf-widget';s.appendChild(w);" +
+      "window.turnstile.render('#cf-widget',{sitekey:'__SITEKEY__'," +
+      "callback:window.onTurnstileSuccess});}};";
+    pdoc.head.appendChild(cb);
+  }
+
+  function ready() { return pwin.turnstile && pwin.turnstile.render; }
+
+  if (ready()) {
+    // API already loaded (e.g. a rerun recreated the empty slot) — just remount.
+    pwin.__cfMount();
+  } else if (!pdoc.getElementById('cf-api')) {
+    var api = pdoc.createElement('script');
+    api.id = 'cf-api';
+    api.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=__cfMount';
+    api.async = true; api.defer = true;
+    pdoc.head.appendChild(api);
+  } else {
+    // API tag present but not ready yet — poll briefly, then mount.
+    var tries = 0;
+    var iv = setInterval(function () {
+      if (ready()) { clearInterval(iv); pwin.__cfMount(); }
+      else if (++tries > 50) clearInterval(iv);
+    }, 100);
+  }
+})();
+</script>
+"""
+
 # --- Rate limiting (public-deploy guardrails) ---
 # Fixed-window limits kept server-side and keyed by client IP (see `_rate_state` /
 # `consume_limit`), mirroring the portfolio site's in-memory limiter. Because the state lives
@@ -60,6 +129,9 @@ LANGUAGES = {"en": "English", "ja": "日本語"}
 
 TRANSLATIONS = {
     "en": {
+        "gate_header": "Quick check before you continue",
+        "gate_caption": "Confirm you're human to access DocumentRAG.",
+        "gate_failed": "Verification failed — please try again.",
         "header": "DocumentRAG — Chat with your PDF",
         "sidebar_title": "Your Documents",
         "uploader_label": "Upload your PDF here",
@@ -82,6 +154,9 @@ TRANSLATIONS = {
         "limit_questions": "⏳ Question limit reached — {max} per PDF. Upload a new PDF to keep going.",
     },
     "ja": {
+        "gate_header": "続行する前に簡単な確認",
+        "gate_caption": "DocumentRAGにアクセスするには、あなたが人間であることを確認してください。",
+        "gate_failed": "確認に失敗しました — もう一度お試しください。",
         "header": "DocumentRAG — PDFと対話するチャットボット",
         "sidebar_title": "ドキュメント",
         "uploader_label": "PDFをここにアップロード",
@@ -220,6 +295,50 @@ def client_id() -> str:
         rid = uuid.uuid4().hex
         st.query_params["rid"] = rid
     return rid
+
+
+def verify_turnstile(token: str) -> bool:
+    """Validate a Turnstile token server-side via Cloudflare's siteverify API.
+
+    Returns True only on a confirmed success. Any network/parse error counts as a
+    failed check (fail closed) so a flaky verify can't wave a visitor through. Uses
+    stdlib urllib to avoid pulling in an extra HTTP dependency.
+    """
+    payload = urllib.parse.urlencode(
+        {"secret": TURNSTILE_SECRET_KEY, "response": token}
+    ).encode()
+    try:
+        req = urllib.request.Request(TURNSTILE_VERIFY_URL, data=payload)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+        return bool(result.get("success"))
+    except Exception:
+        return False
+
+
+def render_turnstile_gate(t) -> None:
+    """Show the human-verification screen with the Turnstile widget.
+
+    Draws a `#cf-slot` mount point in the main page, then runs a 0-height injector
+    (TURNSTILE_GATE_INJECTOR) that mounts the widget and its callback into the parent
+    page's realm — see that constant for why the component iframe can't host it. On
+    success the parent-realm callback navigates the page with `?cf_token=...`, which
+    main() reads back and verifies server-side on the next run.
+    """
+    st.header(t["gate_header"])
+    st.caption(t["gate_caption"])
+    if st.session_state.get("turnstile_failed"):
+        st.error(t["gate_failed"])
+    # Mount point for the widget, in the main page (not the sandboxed component iframe).
+    st.markdown(
+        '<div id="cf-slot" style="display:flex;justify-content:center;padding-top:0.5rem;">'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    components.html(
+        TURNSTILE_GATE_INJECTOR.replace("__SITEKEY__", TURNSTILE_SITE_KEY),
+        height=0,
+    )
 
 
 def extract_text(file) -> str:
@@ -397,7 +516,31 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    # Language switcher, pinned to the top-right of the page.
+    # --- Human-verification gate (Cloudflare Turnstile) ---
+    # Enforced only when both keys are configured (so bare local dev stays ungated). Block the
+    # whole app behind the challenge — including the language switcher and everything below —
+    # so nothing renders until it's cleared. The cleared state lives in this session, so a
+    # reload re-challenges. cf_token carries the one-time widget token back to Python. The gate
+    # text follows the last language picked this session (English until the switcher appears).
+    if (
+        TURNSTILE_SITE_KEY
+        and TURNSTILE_SECRET_KEY
+        and not st.session_state.get("turnstile_ok")
+    ):
+        token = st.query_params.get("cf_token")
+        if token:
+            # One-time token — consume it from the URL whatever the outcome, then rerun.
+            if verify_turnstile(token):
+                st.session_state.turnstile_ok = True
+                st.session_state.turnstile_failed = False
+            else:
+                st.session_state.turnstile_failed = True
+            del st.query_params["cf_token"]
+            st.rerun()
+        render_turnstile_gate(TRANSLATIONS[st.session_state.get("lang", "en")])
+        return
+
+    # Language switcher, pinned to the top-right of the page (only past the gate).
     _, lang_col = st.columns([5, 1])
     with lang_col:
         lang = st.selectbox(

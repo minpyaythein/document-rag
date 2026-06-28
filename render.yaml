@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: document-rag
+    runtime: python
+    plan: free
+    # Render's free web service sleeps after ~15 min idle; first request after
+    # sleep cold-starts in ~30-50s. The server-side rate limiter resets on wake
+    # (see the limiter comment in main.py).
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run main.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      # Pin to 3.12 for the build (3.14 wheels aren't reliably available on
+      # Render yet). Local dev stays on .python-version (3.14) — untouched.
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      # Secrets — set these in the Render dashboard, never commit them.
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: ZAI_API_KEY
+        sync: false
+      - key: ZAI_MODEL
+        sync: false
+      # Cloudflare Turnstile bot gate. Set BOTH to enable it; leave unset to deploy ungated.
+      # Use a dedicated widget whose hostnames include this service's *.onrender.com URL.
+      - key: TURNSTILE_SITE_KEY
+        sync: false
+      - key: TURNSTILE_SECRET_KEY
+        sync: false

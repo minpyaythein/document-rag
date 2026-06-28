@@ -51,6 +51,10 @@ together taught me:
 - **Public-deploy guardrails** — a 1MB upload cap plus per-IP rate limits (PDFs per window and
   questions per PDF), shown live in a sidebar usage meter. The limits are held server-side, so
   a page reload doesn't reset them; the uploader locks and auto-unlocks when the window frees.
+- **Bot protection (optional)** — a [Cloudflare Turnstile](https://www.cloudflare.com/products/turnstile/)
+  gate can guard the whole app: nothing renders until the visitor clears the challenge, which is
+  verified server-side. It's enabled only when the Turnstile keys are set, so local dev runs
+  ungated by default.
 
 ---
 
@@ -90,6 +94,10 @@ Create a `.env` in the project root with your keys:
 ZAI_API_KEY=your-zai-api-key
 ZAI_MODEL=glm-5.2
 GOOGLE_API_KEY=your-gemini-api-key
+
+# Optional — enable the Cloudflare Turnstile gate (both required to turn it on):
+TURNSTILE_SITE_KEY=your-turnstile-site-key
+TURNSTILE_SECRET_KEY=your-turnstile-secret-key
 ```
 
 ### Environment variables
@@ -99,6 +107,8 @@ GOOGLE_API_KEY=your-gemini-api-key
 | `ZAI_API_KEY` | yes | Z.AI API key — used for the chat model. Loaded from `.env`. |
 | `ZAI_MODEL` | yes | Z.AI chat model id, e.g. `glm-5.2`. |
 | `GOOGLE_API_KEY` | yes | Google Gemini API key — used for embeddings. Loaded from `.env`. |
+| `TURNSTILE_SITE_KEY` | no | Cloudflare Turnstile **site** key (public). The gate turns on only when this and the secret are both set. |
+| `TURNSTILE_SECRET_KEY` | no | Cloudflare Turnstile **secret** key — used for the server-side token check. |
 
 > `.env` is git-ignored — never commit real keys.
 
@@ -107,8 +117,10 @@ GOOGLE_API_KEY=your-gemini-api-key
 `.streamlit/config.toml` holds the public-facing guardrails: `maxUploadSize = 1` (MB cap) and
 `toolbarMode = "minimal"` (hides Streamlit's Deploy button). The rate-limit numbers are
 constants at the top of `main.py` — `MAX_UPLOADS_PER_WINDOW`, `MAX_QUESTIONS_PER_PDF`, and
-`UPLOAD_WINDOW_SECONDS`. The intended host is **Render** (free tier): Streamlit needs a
-long-lived server, and the app is stateless (in-memory FAISS), so no database is required.
+`UPLOAD_WINDOW_SECONDS`. The intended host is **Render** (free tier, see `render.yaml`):
+Streamlit needs a long-lived server, and the app is stateless (in-memory FAISS), so no
+database is required. To gate the public deploy, set the two `TURNSTILE_*` keys (use a
+dedicated Turnstile widget whose hostnames include your `*.onrender.com` URL and `localhost`).
 
 ---
 
