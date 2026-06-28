@@ -106,7 +106,7 @@ TURNSTILE_GATE_INJECTOR = """
 # in the Streamlit *server process* rather than in st.session_state, a browser reload — which
 # starts a fresh session — can't reset it. It resets only when the process restarts (e.g. the
 # Render dyno waking from sleep). Both caps share one window for simplicity.
-UPLOAD_WINDOW_SECONDS = 10 * 60  # 10-minute rolling window
+UPLOAD_WINDOW_SECONDS = 5 * 60  # 5-minute rolling window
 MAX_UPLOADS_PER_WINDOW = 1  # PDFs indexed per IP per window
 MAX_QUESTIONS_PER_PDF = 10  # questions per PDF (per IP) per window
 
