@@ -226,7 +226,7 @@ re-enables on its own with no click. The count drives both the lock and the mete
 
 ### 6c. Config (`.streamlit/config.toml`)
 
-`maxUploadSize = 2` (MB) is the hard stop against a large PDF OOM-killing Render's 512MB free
+`maxUploadSize = 1` (MB) is the hard stop against a large PDF OOM-killing Render's 512MB free
 dyno; `toolbarMode = "minimal"` hides the Deploy button. The rate-limit numbers are constants
 in `main.py` (`MAX_UPLOADS_PER_WINDOW`, `MAX_QUESTIONS_PER_PDF`, `UPLOAD_WINDOW_SECONDS`).
 

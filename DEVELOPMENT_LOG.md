@@ -224,9 +224,9 @@ A pass on the ask/answer experience while a response streams:
 Prep for a free-tier **Render** deploy (chosen host — Streamlit needs a long-lived server, so
 Vercel is out; the app is stateless, so no DB). Added cost/abuse guardrails without a database:
 
-- **`.streamlit/config.toml`** — `maxUploadSize = 2` (MB; was Streamlit's 200MB default — a
+- **`.streamlit/config.toml`** — `maxUploadSize = 1` (MB; was Streamlit's 200MB default — a
   hard stop against OOM on Render's 512MB free dyno) and `toolbarMode = "minimal"` (hides the
-  Deploy button). Updated the JA uploader CSS text `200MB → 2MB` to match (the EN side reads
+  Deploy button). Updated the JA uploader CSS text `200MB → 1MB` to match (the EN side reads
   the cap from config automatically).
 - **Server-side, IP-keyed rate limiter** — fixed-window `{count, reset_at}` buckets in a
   process-global `@st.cache_resource` dict, keyed by client IP (`X-Forwarded-For`, set by
@@ -256,8 +256,10 @@ Vercel is out; the app is stateless, so no DB). Added cost/abuse guardrails with
   with no click. The post-count lock fires in the same render as the meter, so they never desync.
 - **State move** — `st.session_state` no longer holds the limits; it keeps only
   `consumed_uploads` (a per-session dedup set so reruns don't double-charge an upload).
-- **Currently dialed to TEST VALUES** in `main.py` (1 PDF / 1 question / 60s window) for
-  testing — flip the three `# TEST VALUE` constants to `2 / 10 / 15*60` for production.
+- **Limits** (constants in `main.py`): **1 PDF upload per 10-minute window**, **10 questions
+  per PDF**. Tunable via `MAX_UPLOADS_PER_WINDOW`, `MAX_QUESTIONS_PER_PDF`,
+  `UPLOAD_WINDOW_SECONDS`. The usage meter renders from first load (before any upload), not
+  only once a PDF is indexed.
 - **Caveats** (same as the portfolio's, already documented there): in-memory resets on a dyno
   restart/sleep; IP keying is coarse (NAT shares a budget, VPN bypasses). Upgrade path noted:
   Upstash Redis if traffic grows.

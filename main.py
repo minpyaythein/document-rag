@@ -37,9 +37,9 @@ THINKING = {"type": "disabled"}
 # in the Streamlit *server process* rather than in st.session_state, a browser reload — which
 # starts a fresh session — can't reset it. It resets only when the process restarts (e.g. the
 # Render dyno waking from sleep). Both caps share one window for simplicity.
-UPLOAD_WINDOW_SECONDS = 1 * 60  # TEST VALUE — bump back up (e.g. 15 * 60) for production
-MAX_UPLOADS_PER_WINDOW = 1  # TEST VALUE — PDFs indexed per IP per window
-MAX_QUESTIONS_PER_PDF = 1  # TEST VALUE — questions per PDF (per IP) per window
+UPLOAD_WINDOW_SECONDS = 10 * 60  # 10-minute rolling window
+MAX_UPLOADS_PER_WINDOW = 1  # PDFs indexed per IP per window
+MAX_QUESTIONS_PER_PDF = 10  # questions per PDF (per IP) per window
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant answering questions about a PDF document.\n\n"
@@ -119,7 +119,7 @@ UPLOADER_JA_CSS = """
 }
 [data-testid='stFileUploaderDropzoneInstructions'] div small { display: none; }
 [data-testid='stFileUploaderDropzoneInstructions'] div::after {
-    content: '1ファイル2MBまで • PDF';
+    content: '1ファイル1MBまで • PDF';
     display: block;
     font-size: 0.8rem;
 }
@@ -378,13 +378,17 @@ def cooldown_refresh(deadline: float) -> None:
 
 def main() -> None:
     # Page styling:
-    # - widen the sidebar a little from its default initial width;
+    # - widen the sidebar from its default — scoped to aria-expanded='true' so the rule
+    #   doesn't pin the collapsed sidebar open and break the fold/unfold arrow;
     # - the language selectbox is a searchable field, so it shows a text cursor and a
     #   blinking caret (as if you could type) — force a pointer cursor and hide the caret
     #   so the switcher reads as a plain clickable dropdown.
     st.markdown(
         "<style>"
-        "[data-testid='stSidebar'] { min-width: 320px; width: 320px; }"
+        "[data-testid='stSidebar'][aria-expanded='true'] { min-width: 320px; width: 320px; }"
+        # Streamlit hides the sidebar's collapse («) arrow with visibility:hidden until you
+        # hover the panel; force it always-visible so the collapse control is obvious.
+        "[data-testid='stSidebarCollapseButton'] { visibility: visible !important; }"
         "[data-testid='stHeading'] h2 { white-space: nowrap; }"
         "div[data-baseweb='select'] > div,"
         "div[data-baseweb='select'] > div * { cursor: pointer; }"
@@ -446,25 +450,28 @@ def main() -> None:
     # run finishes — emptying it here pushes the clear to the browser right away.
     prompt_box = st.empty()
     if file is None:
+        # Show the usage meter from the very start, before anything is uploaded.
         if uploads_exhausted:
             # Locked with nothing loaded — e.g. straight after a reload, where the uploader
-            # comes back empty but the IP's budget is still spent. We won't reach the main
-            # limit UI below (we return here), so explain the lock, show the meter, and keep
-            # the auto-unlock timer ticking right here.
+            # comes back empty but the IP's budget is still spent. Explain the lock and keep
+            # the auto-unlock timer ticking, since we return here without reaching the main UI.
             wait = int((uploads_reset - now) // 60) + 1 if uploads_reset else 1
             upload_notice.caption(
                 t["limit_pdfs"].format(
                     max=MAX_UPLOADS_PER_WINDOW, minutes=window_minutes, wait=wait
                 )
             )
-            st.sidebar.markdown(f"**{t['limits_header']}**")
-            st.sidebar.caption(
-                t["usage_pdfs"].format(
-                    used=uploads_used, max=MAX_UPLOADS_PER_WINDOW, minutes=window_minutes
-                )
-            )
             if uploads_reset:
                 cooldown_refresh(uploads_reset)
+        st.sidebar.markdown(f"**{t['limits_header']}**")
+        st.sidebar.caption(
+            t["usage_pdfs"].format(
+                used=uploads_used, max=MAX_UPLOADS_PER_WINDOW, minutes=window_minutes
+            )
+        )
+        st.sidebar.caption(
+            t["usage_questions"].format(used=0, max=MAX_QUESTIONS_PER_PDF)
+        )
         prompt_box.info(t["upload_prompt"])
         return
     prompt_box.empty()
