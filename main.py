@@ -68,7 +68,7 @@ TURNSTILE_GATE_INJECTOR = """
       "var u=new URL(window.location.href);" +
       "u.searchParams.set('cf_token',tok);" +
       // Brief pause so Turnstile's success checkmark fully draws before we navigate away.
-      "setTimeout(function(){window.location.href=u.toString();},1500);};" +
+      "setTimeout(function(){window.location.href=u.toString();},1400);};" +
       "window.__cfMount=function(){var s=document.getElementById('cf-slot');" +
       "if(s&&!document.getElementById('cf-widget')){" +
       "var w=document.createElement('div');w.id='cf-widget';s.appendChild(w);" +
