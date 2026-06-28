@@ -226,12 +226,16 @@ UPLOADER_LOCKED_CSS = """
 # --- Instant upload feedback (client-side) ---
 # Streamlit can't paint anything between "file chosen" and the post-upload rerun: our Python
 # isn't running during the browser→server file transfer, so the main area sits on the old frame
-# for a beat. This 0-height injector (same parent-realm trick as the Turnstile gate) attaches a
-# one-time `change` listener to the file <input> and drops a "Processing…" banner into the
-# parent page the instant a file is picked — covering that dead air. The banner is cleared at
-# the top of the next run, by which point the real st.spinner("Indexing…") has taken over.
-# `__NONCE__` changes every run so the iframe re-executes (Streamlit caches identical html), and
-# the message is refreshed each run so the language selector stays in sync.
+# for a beat. This 0-height injector drops a "Processing…" banner into the parent page the instant
+# a file is picked — covering that dead air — then clears it at the top of the next run, by which
+# point the real st.spinner("Indexing…") has taken over.
+#
+# Key detail (mirrors the Turnstile gate): the change listener is injected as *parent-realm*
+# <script> source rather than attached from this iframe's realm. `__NONCE__` reloads this iframe
+# every run (so the per-run cleanup + message refresh actually fire — Streamlit caches identical
+# html), which destroys this iframe's realm; a listener closure created here would go dead with
+# it. Defining it in the parent realm keeps it alive across reruns. The banner text is read live
+# from `window.__pdfProcessingMsg` so the language selector stays in sync.
 # ⚠️ Fragile: depends on Streamlit's file-uploader <input> markup; revisit on Streamlit upgrades.
 UPLOAD_FEEDBACK_INJECTOR = """
 <script>
@@ -246,29 +250,33 @@ UPLOAD_FEEDBACK_INJECTOR = """
   var stale = pdoc.getElementById('pdf-processing-overlay');
   if (stale) stale.remove();
 
-  // Attach the change listener once; it lives on the parent and survives reruns.
-  if (!pwin.__pdfProcessingHooked) {
-    pwin.__pdfProcessingHooked = true;
-    if (!pdoc.getElementById('pdf-processing-style')) {
-      var s = pdoc.createElement('style');
-      s.id = 'pdf-processing-style';
-      s.textContent = '@keyframes pdfPulse{0%,100%{opacity:1}50%{opacity:0.55}}';
-      pdoc.head.appendChild(s);
-    }
-    pdoc.addEventListener('change', function (e) {
-      var el = e.target;
-      if (!el || el.type !== 'file' || !el.files || el.files.length === 0) return;
-      if (pdoc.getElementById('pdf-processing-overlay')) return;
-      var o = pdoc.createElement('div');
-      o.id = 'pdf-processing-overlay';
-      o.textContent = pwin.__pdfProcessingMsg;
-      o.style.cssText = 'position:fixed;top:1rem;left:50%;transform:translateX(-50%);' +
-        'z-index:9999;padding:0.6rem 1.1rem;border-radius:0.5rem;' +
-        'background:rgba(38,39,48,0.95);color:#fff;font-size:0.9rem;font-family:inherit;' +
-        'box-shadow:0 2px 12px rgba(0,0,0,0.25);pointer-events:none;' +
-        'animation:pdfPulse 1.2s ease-in-out infinite;';
-      pdoc.body.appendChild(o);
-    }, true);
+  // Install the change listener as parent-realm source, once. Living in the parent (not this
+  // soon-to-be-destroyed iframe), it survives the per-run iframe reloads.
+  if (!pdoc.getElementById('pdf-proc-hook')) {
+    var sc = pdoc.createElement('script');
+    sc.id = 'pdf-proc-hook';
+    sc.textContent =
+      "(function(){var d=document;" +
+      "if(!d.getElementById('pdf-processing-style')){" +
+      "var s=d.createElement('style');s.id='pdf-processing-style';" +
+      "s.textContent='@keyframes pdfPulse{0%,100%{opacity:1}50%{opacity:0.55}}';" +
+      "d.head.appendChild(s);}" +
+      "console.log('[pdf-proc] listener installed');" +
+      "d.addEventListener('change',function(e){" +
+      "var el=e.target;" +
+      "console.log('[pdf-proc] change',el&&el.type,el&&el.files&&el.files.length);" +
+      "if(!el||el.type!=='file'||!el.files||el.files.length===0)return;" +
+      "if(d.getElementById('pdf-processing-overlay'))return;" +
+      "var o=d.createElement('div');o.id='pdf-processing-overlay';" +
+      "o.textContent=window.__pdfProcessingMsg||'Processing…';" +
+      "o.style.cssText='position:fixed;top:1rem;left:50%;transform:translateX(-50%);" +
+      "z-index:2147483647;padding:0.6rem 1.1rem;border-radius:0.5rem;" +
+      "background:rgba(38,39,48,0.95);color:#fff;font-size:0.9rem;font-family:inherit;" +
+      "box-shadow:0 2px 12px rgba(0,0,0,0.25);pointer-events:none;" +
+      "animation:pdfPulse 1.2s ease-in-out infinite;';" +
+      "d.body.appendChild(o);console.log('[pdf-proc] banner shown');" +
+      "},true);})();";
+    pdoc.head.appendChild(sc);
   }
 })();
 </script>
