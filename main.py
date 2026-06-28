@@ -138,6 +138,7 @@ TRANSLATIONS = {
         "uploader_label": "Upload your PDF here",
         "uploader_caption": "📄 One PDF at a time — a new upload replaces the current document.",
         "upload_prompt": "Upload a PDF in the sidebar to get started.",
+        "processing": "Processing your PDF…",
         "indexing": "Indexing your document — you'll be able to chat once it's ready, so hang tight...",
         "missing_env": "Missing required .env value(s): {names}. Add them to your .env file.",
         "scanned_pdf": "No extractable text found — this looks like a scanned or image-only PDF.",
@@ -164,6 +165,7 @@ TRANSLATIONS = {
         "uploader_label": "PDFをここにアップロード",
         "uploader_caption": "📄 一度に1つのPDFのみ — 新しいアップロードで現在のドキュメントと置き換わります。",
         "upload_prompt": "サイドバーからPDFをアップロードして始めましょう。",
+        "processing": "PDFを処理しています…",
         "indexing": "ドキュメントをインデックス化しています — 準備が整うとチャットできます。少々お待ちください...",
         "missing_env": "必須の .env 値が不足しています: {names}。.env ファイルに追加してください。",
         "scanned_pdf": "抽出可能なテキストが見つかりません — スキャン画像のみのPDFのようです。",
@@ -219,6 +221,58 @@ UPLOADER_LOCKED_CSS = """
     opacity: 0.5;
 }
 </style>
+"""
+
+# --- Instant upload feedback (client-side) ---
+# Streamlit can't paint anything between "file chosen" and the post-upload rerun: our Python
+# isn't running during the browser→server file transfer, so the main area sits on the old frame
+# for a beat. This 0-height injector (same parent-realm trick as the Turnstile gate) attaches a
+# one-time `change` listener to the file <input> and drops a "Processing…" banner into the
+# parent page the instant a file is picked — covering that dead air. The banner is cleared at
+# the top of the next run, by which point the real st.spinner("Indexing…") has taken over.
+# `__NONCE__` changes every run so the iframe re-executes (Streamlit caches identical html), and
+# the message is refreshed each run so the language selector stays in sync.
+# ⚠️ Fragile: depends on Streamlit's file-uploader <input> markup; revisit on Streamlit upgrades.
+UPLOAD_FEEDBACK_INJECTOR = """
+<script>
+(function () {
+  var pwin = window.parent;
+  var pdoc = pwin.document;
+
+  // Keep the banner text in step with the language picked this run.
+  pwin.__pdfProcessingMsg = "__MSG__";
+
+  // Clear any banner left over from the previous run — the indexing spinner owns the screen now.
+  var stale = pdoc.getElementById('pdf-processing-overlay');
+  if (stale) stale.remove();
+
+  // Attach the change listener once; it lives on the parent and survives reruns.
+  if (!pwin.__pdfProcessingHooked) {
+    pwin.__pdfProcessingHooked = true;
+    if (!pdoc.getElementById('pdf-processing-style')) {
+      var s = pdoc.createElement('style');
+      s.id = 'pdf-processing-style';
+      s.textContent = '@keyframes pdfPulse{0%,100%{opacity:1}50%{opacity:0.55}}';
+      pdoc.head.appendChild(s);
+    }
+    pdoc.addEventListener('change', function (e) {
+      var el = e.target;
+      if (!el || el.type !== 'file' || !el.files || el.files.length === 0) return;
+      if (pdoc.getElementById('pdf-processing-overlay')) return;
+      var o = pdoc.createElement('div');
+      o.id = 'pdf-processing-overlay';
+      o.textContent = pwin.__pdfProcessingMsg;
+      o.style.cssText = 'position:fixed;top:1rem;left:50%;transform:translateX(-50%);' +
+        'z-index:9999;padding:0.6rem 1.1rem;border-radius:0.5rem;' +
+        'background:rgba(38,39,48,0.95);color:#fff;font-size:0.9rem;font-family:inherit;' +
+        'box-shadow:0 2px 12px rgba(0,0,0,0.25);pointer-events:none;' +
+        'animation:pdfPulse 1.2s ease-in-out infinite;';
+      pdoc.body.appendChild(o);
+    }, true);
+  }
+})();
+</script>
+<!-- __NONCE__ -->
 """
 
 
@@ -560,6 +614,15 @@ def main() -> None:
     # Streamlit's uploader strings are English-only; override them for the JA UI via CSS.
     if lang == "ja":
         st.markdown(UPLOADER_JA_CSS, unsafe_allow_html=True)
+
+    # Client-side "Processing…" banner shown the instant a PDF is picked, to cover the upload +
+    # rerun gap before the indexing spinner can render. The nonce forces a re-run each render.
+    components.html(
+        UPLOAD_FEEDBACK_INJECTOR.replace("__MSG__", t["processing"]).replace(
+            "__NONCE__", str(time.time())
+        ),
+        height=0,
+    )
 
     st.header(t["header"])
 
