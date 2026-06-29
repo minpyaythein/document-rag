@@ -70,6 +70,10 @@ module-level constants at the top of `main.py`.
 - `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` (optional) enable the bot gate; set **both** to
   turn it on. Leave unset for ungated local dev. Use a dedicated Turnstile widget whose
   hostname allowlist covers `localhost` and the deploy URL.
+- `DISCORD_ERROR_WEBHOOK_URL` (optional) turns on 🚨 in-app error alerts (`discord_alert.py`):
+  genuine Gemini/Z.AI failures are mirrored to a Discord channel, throttled. Unset = off. This
+  is the Layer-2 complement to the external UptimeRobot monitor on `/healthz` (see Monitoring
+  in the README) — `/healthz` only proves the platform is up, not that the RAG works.
 - The live deploy runs on **Streamlit Community Cloud** (deploy from GitHub, main file
   `main.py`; secrets pasted as flat TOML keys in the app settings, which Cloud exposes as env
   vars so `os.getenv()` works unchanged). Pin Python **3.12** in the app's Advanced settings

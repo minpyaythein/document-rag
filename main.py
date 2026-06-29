@@ -18,13 +18,19 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from discord_alert import report_error
+
 # --- Configuration ---
 load_dotenv()
 # Embeddings run on Google Gemini; chat/generation runs on Z.AI GLM.
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 ZAI_API_KEY = os.getenv("ZAI_API_KEY")
-ZAI_BASE_URL = "https://api.z.ai/api/coding/paas/v4"  # OpenAI-compatible endpoint
+ZAI_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 CHAT_MODEL = os.getenv("ZAI_MODEL")
+
+# 🚨 Layer-2 monitoring: optional Discord webhook for in-app error alerts (see discord_alert.py).
+# Unset = alerting off — exactly like the portfolio's NUXT_DISCORD_ERROR_WEBHOOK_URL.
+DISCORD_ERROR_WEBHOOK_URL = os.getenv("DISCORD_ERROR_WEBHOOK_URL")
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
@@ -55,12 +61,13 @@ TURNSTILE_GATE_INJECTOR = """
 (function () {
   var pwin = window.parent;
   var pdoc = pwin.document;
-  var slot = pdoc.getElementById('cf-slot');
-  if (!slot) return;
+
+  function ready() { return pwin.turnstile && pwin.turnstile.render; }
 
   // Callback + mount helper injected as parent-realm source so the navigation in
   // onTurnstileSuccess runs un-sandboxed. Added once; survives Streamlit reruns.
-  if (!pdoc.getElementById('cf-cb')) {
+  function ensureCallback() {
+    if (pdoc.getElementById('cf-cb')) return;
     var cb = pdoc.createElement('script');
     cb.id = 'cf-cb';
     cb.textContent =
@@ -77,25 +84,41 @@ TURNSTILE_GATE_INJECTOR = """
     pdoc.head.appendChild(cb);
   }
 
-  function ready() { return pwin.turnstile && pwin.turnstile.render; }
-
-  if (ready()) {
-    // API already loaded (e.g. a rerun recreated the empty slot) — just remount.
-    pwin.__cfMount();
-  } else if (!pdoc.getElementById('cf-api')) {
-    var api = pdoc.createElement('script');
-    api.id = 'cf-api';
-    api.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=__cfMount';
-    api.async = true; api.defer = true;
-    pdoc.head.appendChild(api);
-  } else {
-    // API tag present but not ready yet — poll briefly, then mount.
-    var tries = 0;
-    var iv = setInterval(function () {
-      if (ready()) { clearInterval(iv); pwin.__cfMount(); }
-      else if (++tries > 50) clearInterval(iv);
-    }, 100);
+  function loadApiAndMount() {
+    if (ready()) {
+      // API already loaded (e.g. a rerun recreated the empty slot) — just remount.
+      pwin.__cfMount();
+    } else if (!pdoc.getElementById('cf-api')) {
+      var api = pdoc.createElement('script');
+      api.id = 'cf-api';
+      api.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=__cfMount';
+      api.async = true; api.defer = true;
+      pdoc.head.appendChild(api);
+    } else {
+      // API tag present but not ready yet — poll briefly, then mount.
+      var tries = 0;
+      var iv = setInterval(function () {
+        if (ready()) { clearInterval(iv); pwin.__cfMount(); }
+        else if (++tries > 50) clearInterval(iv);
+      }, 100);
+    }
   }
+
+  // Wait for the parent's #cf-slot to exist before mounting. This injector iframe and the
+  // #cf-slot markdown are separate Streamlit elements with no render-order guarantee, so on
+  // a cold first load this script can run BEFORE the slot is committed to the parent DOM.
+  // The old code bailed in that case (`if (!slot) return;`) and never retried, leaving the
+  // gate with no widget until a manual reload — poll for the slot instead (~10s cap).
+  var waited = 0;
+  var slotIv = setInterval(function () {
+    if (pdoc.getElementById('cf-slot')) {
+      clearInterval(slotIv);
+      ensureCallback();
+      loadApiAndMount();
+    } else if (++waited > 100) {
+      clearInterval(slotIv);
+    }
+  }, 100);
 })();
 </script>
 """
@@ -702,6 +725,9 @@ def main() -> None:
         st.error(t["scanned_pdf"])
         return
     except Exception as e:  # embedding/index failure: API error, bad key or model, etc.
+        # 🚨 Real upstream failure (Gemini) — mirror to Discord. The scanned-PDF ValueError
+        # above is a user-input case and stays un-alerted (the analog of a 400, not a 5xx).
+        report_error(DISCORD_ERROR_WEBHOOK_URL, "indexing (Gemini embeddings)", e)
         # Often transient (rate limit, network) — let the user re-run the indexing.
         # The error goes in a placeholder so clicking retry clears it before re-indexing.
         error_box = st.empty()
@@ -768,6 +794,8 @@ def main() -> None:
             # bubble up; only real errors become an answer error.
             if type(e).__name__ in ("RerunException", "StopException"):
                 raise
+            # 🚨 Genuine LLM failure (past the control-flow guard) — mirror to Discord.
+            report_error(DISCORD_ERROR_WEBHOOK_URL, "chat (Z.AI GLM)", e)
             st.session_state.answer_error = str(e)
         # Reached only when streaming finished or failed on its own (a Stop interrupt
         # raises past here). Leave the asking state, which re-enables the button.

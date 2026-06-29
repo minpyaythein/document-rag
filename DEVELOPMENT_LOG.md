@@ -287,6 +287,44 @@ faster in normal use, and running one host is simpler.)
 
 ---
 
+## 2026-06-30: Site health monitoring (two layers, ported from the portfolio)
+
+Added uptime + error monitoring, mirroring the portfolio's two-layer design.
+
+- **Layer 1 — external liveness (UptimeRobot).** HTTP(s) **keyword** monitor on
+  `https://document-rag-minpyaythein.streamlit.app/healthz`, keyword `ok`, 5-min interval,
+  Discord alert contact. Set up in the UptimeRobot dashboard (no code).
+  - **Why `/healthz`, not `/_stcore/health`:** verified that `/_stcore/health` **303-redirects
+    anonymous clients** (`→ share.streamlit.io/-/auth/app → /-/login?payload=…`) even when the
+    app is awake, so a plain monitor never sees `ok` (this is also the "white screen, loads
+    forever" symptom in a browser). `/healthz` returns `{"status":"ok"}` directly to anonymous
+    clients. App sharing is "anyone with the URL"; the redirect was Streamlit's auth/wake dance.
+  - **Caveat:** `/healthz` is answered at Streamlit Cloud's **edge layer** — it proves the
+    platform is up, not that the RAG works. Hence Layer 2.
+- **Layer 2 — in-app error mirror (Discord).** New `discord_alert.py` (port of the portfolio's
+  `server/utils/discord.ts`): `report_error()` fires a throttled (5-min/signature) Discord embed
+  on a daemon thread; `post_discord()` is fire-and-forget and fully swallowed. **Stdlib only**
+  (`urllib`), so no change to `requirements.txt` / `pyproject.toml`.
+  - **Gotcha (fixed):** `post_discord` MUST send an explicit `User-Agent` header — Discord's
+    Cloudflare **403-blocks** urllib's default `Python-urllib/x.y` UA, so the first version
+    silently failed (403, swallowed) and no alert landed. The portfolio's Node `fetch` never hit
+    this because it sends a browser-ish UA. Verified: same payload returns 403 without a UA, 204
+    with one.
+  - **Wired into the two existing `except` seams in `main.py`:** the embedding/index failure
+    (Gemini) and the LLM streaming failure (Z.AI). Filtered out, deliberately: the scanned-PDF
+    `ValueError` (user input, the 400 analog) and Streamlit's `RerunException`/`StopException`
+    (Stop/rerun control flow). Gated on `DISCORD_ERROR_WEBHOOK_URL` — unset = off, like the
+    portfolio's `NUXT_DISCORD_ERROR_WEBHOOK_URL`.
+  - **No top-level catch-all** around `main()`: `st.rerun()` raises `RerunException` constantly,
+    so a global catch would be noisy/fragile. The two seams cover every genuine upstream failure;
+    truly uncaught crashes still surface in Streamlit's own error box.
+- **Files**: new `discord_alert.py`; `main.py` (import + `DISCORD_ERROR_WEBHOOK_URL` +
+  two `report_error` calls); docs (`CLAUDE.md`, `README.md`/`README.ja.md`, this log, `ARCHITECTURE.md`).
+- **Secrets**: add `DISCORD_ERROR_WEBHOOK_URL` to `.env` (local) and Streamlit Cloud → Settings →
+  Secrets (live). Can reuse the portfolio's alerts webhook or a dedicated DocumentRAG channel.
+
+---
+
 ## Frozen facts (keep consistent everywhere)
 
 - **Chat model**: set via `ZAI_MODEL` in `.env` (e.g. `glm-5.2`), through Z.AI, endpoint `https://api.z.ai/api/coding/paas/v4` (`temperature=0.3`, `max_tokens=1024`)

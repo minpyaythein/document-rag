@@ -109,6 +109,7 @@ TURNSTILE_SECRET_KEY=your-turnstile-secret-key
 | `GOOGLE_API_KEY` | yes | Google Gemini API key — used for embeddings. Loaded from `.env`. |
 | `TURNSTILE_SITE_KEY` | no | Cloudflare Turnstile **site** key (public). The gate turns on only when this and the secret are both set. |
 | `TURNSTILE_SECRET_KEY` | no | Cloudflare Turnstile **secret** key — used for the server-side token check. |
+| `DISCORD_ERROR_WEBHOOK_URL` | no | Discord webhook for 🚨 in-app error alerts. Unset = alerting off. See [Monitoring & alerting](#monitoring--alerting). |
 
 > `.env` is git-ignored — never commit real keys.
 
@@ -123,6 +124,25 @@ Cloud** (deploy from GitHub, main file `main.py`, secrets pasted as flat TOML ke
 exposed as env vars, so the `os.getenv()` config works unchanged). To gate the public deploy,
 set the two `TURNSTILE_*` keys (use a dedicated Turnstile widget whose hostnames include your
 deploy URL — `*.streamlit.app` — and `localhost`).
+
+---
+
+## Monitoring & alerting
+
+Two complementary layers:
+
+- **Layer 1 — external liveness (UptimeRobot).** An HTTP(s) **keyword** monitor pings
+  `https://document-rag-minpyaythein.streamlit.app/healthz` every 5 min, expecting the keyword
+  `ok`, and alerts a Discord contact when it's absent. Use `/healthz`, **not**
+  `/_stcore/health` — the latter 303-redirects anonymous clients into Streamlit's auth/wake
+  dance (so a plain monitor never sees `ok`). The 5-min ping doubles as a keep-alive. Caveat:
+  `/healthz` is answered at Streamlit Cloud's edge layer, so it proves the *platform* is up,
+  not that the RAG itself works — which is what Layer 2 is for.
+- **Layer 2 — in-app error mirror (Discord).** `discord_alert.py` mirrors genuine upstream
+  failures — Gemini embedding errors and Z.AI chat errors — to a Discord channel, throttled to
+  one alert per signature per 5 min. Turned on by setting `DISCORD_ERROR_WEBHOOK_URL` (unset =
+  off). User-input cases (scanned/image-only PDF) and Streamlit's control-flow exceptions
+  (Stop/rerun) are deliberately **not** alerted.
 
 ---
 

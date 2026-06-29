@@ -230,6 +230,22 @@ re-enables on its own with no click. The count drives both the lock and the mete
 container; `toolbarMode = "minimal"` hides the Deploy button. The rate-limit numbers are constants
 in `main.py` (`MAX_UPLOADS_PER_WINDOW`, `MAX_QUESTIONS_PER_PDF`, `UPLOAD_WINDOW_SECONDS`).
 
+### 6d. Monitoring & alerting — two layers
+
+Liveness and correctness are different questions, so they get different probes:
+
+- **External liveness (UptimeRobot → `/healthz`).** A keyword monitor expects `ok`. It uses
+  `/healthz` rather than `/_stcore/health` because the latter 303-redirects anonymous clients
+  into Streamlit's auth/wake flow (never reaching `ok`). It catches the platform being down —
+  but `/healthz` is an *edge*-layer response, so it can't tell you the RAG itself broke.
+- **In-app error mirror (`discord_alert.py`).** That gap is why `report_error()` exists: the two
+  real upstream-failure `except` blocks in `main()` — embedding (Gemini) and chat streaming
+  (Z.AI) — mirror the exception to Discord, throttled to one alert per signature per 5 min, on a
+  daemon thread so the user's error UI isn't blocked. User-input errors (scanned PDF) and
+  Streamlit control-flow exceptions (Stop/rerun) are filtered out. Off unless
+  `DISCORD_ERROR_WEBHOOK_URL` is set. (No top-level catch-all: `st.rerun()` throws constantly, so
+  a global handler would be noise.)
+
 ---
 
 ## 7. Configuration
