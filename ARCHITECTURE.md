@@ -176,7 +176,7 @@ A few things are happening here:
 
 ## 6. Rate limiting & deploy guardrails
 
-Made public-deploy-ready (target: **Render** free tier) without a database. Three concerns:
+Made public-deploy-ready (target: a free-tier host) without a database. Three concerns:
 cap upload size, cap API spend, and hide Streamlit's dev chrome.
 
 ### 6a. Server-side, IP-keyed rate limiter — *the reload-proof part*
@@ -204,8 +204,8 @@ def consume_limit(state, key, limit, window, now) -> bool:
 ```
 
 Two caps, two bucket namespaces: `upload:{ip}` (PDFs per window) and `q:{ip}:{file_id}`
-(questions per document per window). The client key prefers `X-Forwarded-For` (set by Render's
-proxy, stable across reloads); with no proxy (local dev) it falls back to a random id parked
+(questions per document per window). The client key prefers `X-Forwarded-For` (set by the
+host's proxy, stable across reloads); with no proxy (local dev) it falls back to a random id parked
 in the **URL query string** — which survives a reload, where `st.session_state` would not (a
 reload starts a fresh session, so a session-based key would silently reset the limit). Upload
 slots are consumed **before** embedding (the
@@ -226,8 +226,8 @@ re-enables on its own with no click. The count drives both the lock and the mete
 
 ### 6c. Config (`.streamlit/config.toml`)
 
-`maxUploadSize = 1` (MB) is the hard stop against a large PDF OOM-killing Render's 512MB free
-dyno; `toolbarMode = "minimal"` hides the Deploy button. The rate-limit numbers are constants
+`maxUploadSize = 1` (MB) is the hard stop against a large PDF OOM-killing a 512MB free-tier
+container; `toolbarMode = "minimal"` hides the Deploy button. The rate-limit numbers are constants
 in `main.py` (`MAX_UPLOADS_PER_WINDOW`, `MAX_QUESTIONS_PER_PDF`, `UPLOAD_WINDOW_SECONDS`).
 
 ---
@@ -281,6 +281,6 @@ for the bilingual interface, with the language picked by a top-right selector.
    services — two API keys, two points of failure. Fine for a small app; using one
    provider for both would simplify ops.
 7. **Rate limits are in-memory and IP-keyed.** They survive page reloads (server-side state)
-   but reset when the process restarts — e.g. a Render free dyno waking from sleep — and IP
+   but reset when the process restarts — e.g. a free-tier container waking from sleep — and IP
    keying is coarse: users behind one NAT share a budget, a new IP/VPN bypasses it. A shared
    store (Upstash Redis) is the upgrade if traffic ever warrants it.

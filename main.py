@@ -105,7 +105,7 @@ TURNSTILE_GATE_INJECTOR = """
 # `consume_limit`), mirroring the portfolio site's in-memory limiter. Because the state lives
 # in the Streamlit *server process* rather than in st.session_state, a browser reload — which
 # starts a fresh session — can't reset it. It resets only when the process restarts (e.g. the
-# Render dyno waking from sleep). Both caps share one window for simplicity.
+# host's container waking from sleep). Both caps share one window for simplicity.
 UPLOAD_WINDOW_SECONDS = 1 * 60  # 1-minute rolling window
 MAX_UPLOADS_PER_WINDOW = 1  # PDFs indexed per IP per window
 MAX_QUESTIONS_PER_PDF = 10  # questions per PDF (per IP) per window
@@ -277,7 +277,7 @@ def consume_limit(state: dict, key: str, limit: int, window: float, now: float) 
 def client_id() -> str:
     """Stable per-client key that survives a page reload.
 
-    Prefers the real IP behind a proxy — Render/Vercel set `X-Forwarded-For` — which is stable
+    Prefers the real IP behind a proxy — most hosts set `X-Forwarded-For` — which is stable
     across reloads. With no proxy (local dev) there's no such header, so we fall back to a
     random id parked in the URL query string. Unlike `st.session_state` (a fresh session every
     reload — which is exactly why the limit kept resetting), a query param rides along on F5,

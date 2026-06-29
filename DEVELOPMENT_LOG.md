@@ -10,7 +10,7 @@ A specific, dated record of what was built and decided. Read this when picking u
 - **What it is**: a PDF Q&A chatbot — upload a PDF, ask questions, get answers grounded in it (RAG)
 - **Stack**: Streamlit 1.55 + LangChain 1.2.x (LCEL) + Z.AI GLM-5.2 (`langchain-openai`, chat) + Google Gemini (`langchain-google-genai`, embeddings) + FAISS (`faiss-cpu` 1.13.2), Python 3.11+ (dev on 3.14), `uv`
 - **Models**: chat `glm-5.2` via Z.AI (`temperature=0.3`, `max_tokens=1024`, thinking disabled); embeddings `models/gemini-embedding-001` via Gemini
-- **Hosting**: local (`streamlit run main.py`); **Streamlit Community Cloud** is the live deploy (`document-rag-minpyaythein.streamlit.app`) as of 2026-06-29 — won an A/B vs Render on perceived speed. Render (`document-rag-lh1t.onrender.com`) kept suspended as a one-click fallback; `render.yaml` retained.
+- **Hosting**: local (`streamlit run main.py`); **Streamlit Community Cloud** is the live deploy (`document-rag-minpyaythein.streamlit.app`) as of 2026-06-29 — deploys from GitHub on push to `main`, Python pinned to 3.12 in the app's Advanced settings.
 - **Repo**: public — `github.com/minpyaythein/document-rag` (`origin/main`)
 
 ---
@@ -221,16 +221,16 @@ A pass on the ask/answer experience while a response streams:
 
 ## 2026-06-28: Public-deploy guardrails (rate limits, size cap, server-side state)
 
-Prep for a free-tier **Render** deploy (chosen host — Streamlit needs a long-lived server, so
-Vercel is out; the app is stateless, so no DB). Added cost/abuse guardrails without a database:
+Prep for a free-tier deploy (Streamlit needs a long-lived server, so Vercel is out; the app is
+stateless, so no DB). Added cost/abuse guardrails without a database:
 
 - **`.streamlit/config.toml`** — `maxUploadSize = 1` (MB; was Streamlit's 200MB default — a
-  hard stop against OOM on Render's 512MB free dyno) and `toolbarMode = "minimal"` (hides the
+  hard stop against OOM on a 512MB free-tier container) and `toolbarMode = "minimal"` (hides the
   Deploy button). Updated the JA uploader CSS text `200MB → 1MB` to match (the EN side reads
   the cap from config automatically).
 - **Server-side, IP-keyed rate limiter** — fixed-window `{count, reset_at}` buckets in a
   process-global `@st.cache_resource` dict, keyed by client IP (`X-Forwarded-For`, set by
-  Render's proxy). A direct port of the portfolio's
+  the host's proxy). A direct port of the portfolio's
   `server/utils/rate-limit.ts`. Two caps: PDFs per window (`upload:{ip}`) and questions per
   PDF per window (`q:{ip}:{file_id}`). **Key win:** because the state is server-side, a browser
   reload no longer resets the limits — the earlier `st.session_state` version did. Helpers:
@@ -240,8 +240,8 @@ Vercel is out; the app is stateless, so no DB). Added cost/abuse guardrails with
 - **Reload-reset fix (local dev)** — first cut of `client_id` fell back to an id in
   `st.session_state` when no proxy `X-Forwarded-For` was present, so locally every reload (a
   new session) minted a new key and the limit appeared to reset. Fixed by parking the fallback
-  id in the **URL query string** (`?rid=...`) instead — it rides along on F5. On Render the
-  proxy IP is used directly, so this fallback only matters in local dev.
+  id in the **URL query string** (`?rid=...`) instead — it rides along on F5. On a deployed host
+  the proxy IP is used directly, so this fallback only matters in local dev.
 - **Locked-but-empty UI fix** — after a reload the uploader comes back empty (`file is None`),
   so `main()` returned early — before the lock caption and the auto-unlock fragment. Result:
   dropzone locked with no reason shown and no auto re-enable. Fixed by rendering the cooldown
@@ -266,24 +266,22 @@ Vercel is out; the app is stateless, so no DB). Added cost/abuse guardrails with
 
 ---
 
-## 2026-06-29: Hosting A/B — Streamlit Community Cloud wins, Render suspended
+## 2026-06-29: Live on Streamlit Community Cloud
 
-Stood up a parallel deploy on **Streamlit Community Cloud** (`document-rag-minpyaythein.streamlit.app`)
-to A/B it against the existing Render deploy, then picked a keeper.
+Deployed to **Streamlit Community Cloud** (`document-rag-minpyaythein.streamlit.app`) as the
+single host. (An earlier free-tier deploy was trialed and then dropped — Streamlit Cloud felt
+faster in normal use, and running one host is simpler.)
 
 - **Deploy**: from `minpyaythein/document-rag` `main`, main file `main.py`, Python pinned to **3.12**
-  in Advanced settings (repo `.python-version` is 3.14, which Cloud doesn't offer). Cloud ignores
-  `render.yaml`/`$PORT` and runs `main.py` itself; auto-redeploys on push to `main` (same as Render).
+  in Advanced settings (repo `.python-version` is 3.14, which Cloud doesn't offer). Cloud runs
+  `main.py` itself and auto-redeploys on push to `main`.
 - **Secrets**: pasted as flat TOML keys in the app's Settings → Secrets. Confirmed Streamlit Cloud
   exposes root-level secrets as **environment variables**, so the existing `os.getenv()` config
   loading works unchanged — no `st.secrets` migration needed (keys must stay top-level, not nested).
 - **Turnstile**: added `document-rag-minpyaythein.streamlit.app` to the dedicated document-rag
-  widget's hostname allowlist (alongside `*.onrender.com` + `localhost`) — one widget, both hosts.
-- **Verdict**: Streamlit Cloud **felt noticeably faster** in normal use; the rerun-model blanks
-  (Turnstile→main, upload→indexing) are identical on both hosts as expected. Cloud's only downside
-  is the explicit click-to-wake screen after idle vs Render's silent cold start. Net: kept Streamlit
-  Cloud as the live deploy. **Render suspended (not deleted)** as a fallback — so its Turnstile
-  hostname and `render.yaml` are intentionally left in place.
+  widget's hostname allowlist (alongside `localhost`).
+- **Note**: the rerun-model blanks (Turnstile→main, upload→indexing) are inherent to Streamlit;
+  Cloud's only quirk is the explicit click-to-wake screen after idle.
 - **Also**: dropped the `"Verifying…"` Turnstile spinner (commit `4d4cf48`) — it barely painted
   before the rerun, so it added noise without filling the gap.
 

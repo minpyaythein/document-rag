@@ -119,11 +119,9 @@ TURNSTILE_SECRET_KEY=your-turnstile-secret-key
 Streamlit は常駐サーバーが必要で、本アプリはステートレス（FAISS はメモリ上）なため、データ
 ベースは不要です。本番デプロイは **Streamlit Community Cloud** で稼働しています（GitHub から
 デプロイ、メインファイルは `main.py`、シークレットはフラットな TOML キーとして貼り付け — 環境
-変数として公開されるため、`os.getenv()` による設定読み込みがそのまま動作します）。フォール
-バックとして **Render** の Blueprint（`render.yaml`、無料枠）も残しています。公開デプロイを
+変数として公開されるため、`os.getenv()` による設定読み込みがそのまま動作します）。公開デプロイを
 ゲートで保護するには、`TURNSTILE_*` の2つのキーを設定します（デプロイURL — `*.streamlit.app`
-や `*.onrender.com` — と `localhost` をホスト名に含めた専用の Turnstile ウィジェットを使用
-してください）。
+— と `localhost` をホスト名に含めた専用の Turnstile ウィジェットを使用してください）。
 
 ---
 

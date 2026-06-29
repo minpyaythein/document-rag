@@ -120,10 +120,9 @@ constants at the top of `main.py` — `MAX_UPLOADS_PER_WINDOW`, `MAX_QUESTIONS_P
 `UPLOAD_WINDOW_SECONDS`. Streamlit needs a long-lived server, and the app is stateless
 (in-memory FAISS), so no database is required. The live deploy runs on **Streamlit Community
 Cloud** (deploy from GitHub, main file `main.py`, secrets pasted as flat TOML keys — they're
-exposed as env vars, so the `os.getenv()` config works unchanged). A **Render** Blueprint
-(`render.yaml`, free tier) is also kept as a fallback. To gate the public deploy, set the two
-`TURNSTILE_*` keys (use a dedicated Turnstile widget whose hostnames include your deploy URL —
-`*.streamlit.app` and/or `*.onrender.com` — and `localhost`).
+exposed as env vars, so the `os.getenv()` config works unchanged). To gate the public deploy,
+set the two `TURNSTILE_*` keys (use a dedicated Turnstile widget whose hostnames include your
+deploy URL — `*.streamlit.app` — and `localhost`).
 
 ---
 
