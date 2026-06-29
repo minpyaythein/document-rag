@@ -10,7 +10,7 @@ A specific, dated record of what was built and decided. Read this when picking u
 - **What it is**: a PDF Q&A chatbot — upload a PDF, ask questions, get answers grounded in it (RAG)
 - **Stack**: Streamlit 1.55 + LangChain 1.2.x (LCEL) + Z.AI GLM-5.2 (`langchain-openai`, chat) + Google Gemini (`langchain-google-genai`, embeddings) + FAISS (`faiss-cpu` 1.13.2), Python 3.11+ (dev on 3.14), `uv`
 - **Models**: chat `glm-5.2` via Z.AI (`temperature=0.3`, `max_tokens=1024`, thinking disabled); embeddings `models/gemini-embedding-001` via Gemini
-- **Hosting**: local (`streamlit run main.py`); **Render** free tier is the chosen deploy target — guardrails added 2026-06-28, not yet pushed live
+- **Hosting**: local (`streamlit run main.py`); **Streamlit Community Cloud** is the live deploy (`document-rag-minpyaythein.streamlit.app`) as of 2026-06-29 — won an A/B vs Render on perceived speed. Render (`document-rag-lh1t.onrender.com`) kept suspended as a one-click fallback; `render.yaml` retained.
 - **Repo**: public — `github.com/minpyaythein/document-rag` (`origin/main`)
 
 ---
@@ -263,6 +263,29 @@ Vercel is out; the app is stateless, so no DB). Added cost/abuse guardrails with
 - **Caveats** (same as the portfolio's, already documented there): in-memory resets on a dyno
   restart/sleep; IP keying is coarse (NAT shares a budget, VPN bypasses). Upgrade path noted:
   Upstash Redis if traffic grows.
+
+---
+
+## 2026-06-29: Hosting A/B — Streamlit Community Cloud wins, Render suspended
+
+Stood up a parallel deploy on **Streamlit Community Cloud** (`document-rag-minpyaythein.streamlit.app`)
+to A/B it against the existing Render deploy, then picked a keeper.
+
+- **Deploy**: from `minpyaythein/document-rag` `main`, main file `main.py`, Python pinned to **3.12**
+  in Advanced settings (repo `.python-version` is 3.14, which Cloud doesn't offer). Cloud ignores
+  `render.yaml`/`$PORT` and runs `main.py` itself; auto-redeploys on push to `main` (same as Render).
+- **Secrets**: pasted as flat TOML keys in the app's Settings → Secrets. Confirmed Streamlit Cloud
+  exposes root-level secrets as **environment variables**, so the existing `os.getenv()` config
+  loading works unchanged — no `st.secrets` migration needed (keys must stay top-level, not nested).
+- **Turnstile**: added `document-rag-minpyaythein.streamlit.app` to the dedicated document-rag
+  widget's hostname allowlist (alongside `*.onrender.com` + `localhost`) — one widget, both hosts.
+- **Verdict**: Streamlit Cloud **felt noticeably faster** in normal use; the rerun-model blanks
+  (Turnstile→main, upload→indexing) are identical on both hosts as expected. Cloud's only downside
+  is the explicit click-to-wake screen after idle vs Render's silent cold start. Net: kept Streamlit
+  Cloud as the live deploy. **Render suspended (not deleted)** as a fallback — so its Turnstile
+  hostname and `render.yaml` are intentionally left in place.
+- **Also**: dropped the `"Verifying…"` Turnstile spinner (commit `4d4cf48`) — it barely painted
+  before the rerun, so it added noise without filling the gap.
 
 ---
 
