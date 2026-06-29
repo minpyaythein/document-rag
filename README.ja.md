@@ -116,10 +116,14 @@ TURNSTILE_SECRET_KEY=your-turnstile-secret-key
 `.streamlit/config.toml` が公開時の安全策を設定します：`maxUploadSize = 1`（MBの上限）と
 `toolbarMode = "minimal"`（Streamlit の Deploy ボタンを非表示）。レート制限の数値は `main.py`
 冒頭の定数 — `MAX_UPLOADS_PER_WINDOW`、`MAX_QUESTIONS_PER_PDF`、`UPLOAD_WINDOW_SECONDS` です。
-想定するホストは **Render**（無料枠、`render.yaml` を参照）です。Streamlit は常駐サーバーが
-必要で、本アプリはステートレス（FAISS はメモリ上）なため、データベースは不要です。公開デプロイを
-ゲートで保護するには、`TURNSTILE_*` の2つのキーを設定します（ホスト名に `*.onrender.com` の
-URL と `localhost` を含めた専用の Turnstile ウィジェットを使用してください）。
+Streamlit は常駐サーバーが必要で、本アプリはステートレス（FAISS はメモリ上）なため、データ
+ベースは不要です。本番デプロイは **Streamlit Community Cloud** で稼働しています（GitHub から
+デプロイ、メインファイルは `main.py`、シークレットはフラットな TOML キーとして貼り付け — 環境
+変数として公開されるため、`os.getenv()` による設定読み込みがそのまま動作します）。フォール
+バックとして **Render** の Blueprint（`render.yaml`、無料枠）も残しています。公開デプロイを
+ゲートで保護するには、`TURNSTILE_*` の2つのキーを設定します（デプロイURL — `*.streamlit.app`
+や `*.onrender.com` — と `localhost` をホスト名に含めた専用の Turnstile ウィジェットを使用
+してください）。
 
 ---
 

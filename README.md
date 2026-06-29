@@ -117,10 +117,13 @@ TURNSTILE_SECRET_KEY=your-turnstile-secret-key
 `.streamlit/config.toml` holds the public-facing guardrails: `maxUploadSize = 1` (MB cap) and
 `toolbarMode = "minimal"` (hides Streamlit's Deploy button). The rate-limit numbers are
 constants at the top of `main.py` — `MAX_UPLOADS_PER_WINDOW`, `MAX_QUESTIONS_PER_PDF`, and
-`UPLOAD_WINDOW_SECONDS`. The intended host is **Render** (free tier, see `render.yaml`):
-Streamlit needs a long-lived server, and the app is stateless (in-memory FAISS), so no
-database is required. To gate the public deploy, set the two `TURNSTILE_*` keys (use a
-dedicated Turnstile widget whose hostnames include your `*.onrender.com` URL and `localhost`).
+`UPLOAD_WINDOW_SECONDS`. Streamlit needs a long-lived server, and the app is stateless
+(in-memory FAISS), so no database is required. The live deploy runs on **Streamlit Community
+Cloud** (deploy from GitHub, main file `main.py`, secrets pasted as flat TOML keys — they're
+exposed as env vars, so the `os.getenv()` config works unchanged). A **Render** Blueprint
+(`render.yaml`, free tier) is also kept as a fallback. To gate the public deploy, set the two
+`TURNSTILE_*` keys (use a dedicated Turnstile widget whose hostnames include your deploy URL —
+`*.streamlit.app` and/or `*.onrender.com` — and `localhost`).
 
 ---
 

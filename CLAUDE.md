@@ -70,8 +70,11 @@ module-level constants at the top of `main.py`.
 - `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` (optional) enable the bot gate; set **both** to
   turn it on. Leave unset for ungated local dev. Use a dedicated Turnstile widget whose
   hostname allowlist covers `localhost` and the deploy URL.
-- Deployment to Render is described in `render.yaml` (Blueprint); secrets are set in the
-  dashboard (`sync: false`), never committed
+- The live deploy runs on **Streamlit Community Cloud** (deploy from GitHub, main file
+  `main.py`; secrets pasted as flat TOML keys in the app settings, which Cloud exposes as env
+  vars so `os.getenv()` works unchanged). A **Render** Blueprint (`render.yaml`; dashboard
+  secrets, `sync: false`, never committed) is kept as a fallback. Pin Python **3.12** on either
+  host (the repo `.python-version` is 3.14, which neither offers reliably).
 - Python: requires 3.11+ (`pyproject.toml`); dev env pinned to 3.14 via `.python-version`
 - Dependencies are pinned in both `requirements.txt` and `pyproject.toml` — keep them in sync
 - UI strings are bilingual (EN/JA) in a `TRANSLATIONS` dict in `main.py`; a top-right selector
