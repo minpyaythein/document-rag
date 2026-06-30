@@ -124,16 +124,16 @@ TURNSTILE_GATE_INJECTOR = """
 """
 
 # --- Rate limiting (public-deploy guardrails) ---
-# Fixed-window limits kept server-side and keyed by a per-browser cookie (see `client_id` /
-# `consume_limit`), mirroring the portfolio site's in-memory limiter. We key on a cookie, not
-# the IP: Streamlit Cloud's X-Forwarded-For only exposes its own internal LB hops (see
-# `client_id`). Because the state lives in the Streamlit *server process* rather than in
-# st.session_state, a browser reload — which starts a fresh session — can't reset it. It
-# resets only when the process restarts (e.g. the host's container waking from sleep). Both
-# caps share one window for simplicity.
+# Fixed-window limits kept server-side and keyed by a per-client id carried in the URL query
+# string (see `client_id` / `consume_limit`), mirroring the portfolio site's in-memory limiter.
+# We key on that id, not the IP: Streamlit Cloud's X-Forwarded-For only exposes its own internal
+# LB hops (see `client_id`). Because the state lives in the Streamlit *server process* rather
+# than in st.session_state, a browser reload — which starts a fresh session — can't reset it. It
+# resets only when the process restarts (e.g. the host's container waking from sleep). Both caps
+# share one window for simplicity.
 UPLOAD_WINDOW_SECONDS = 1 * 60  # 1-minute rolling window
-MAX_UPLOADS_PER_WINDOW = 1  # PDFs indexed per browser per window
-MAX_QUESTIONS_PER_PDF = 10  # questions per PDF (per browser) per window
+MAX_UPLOADS_PER_WINDOW = 1  # PDFs indexed per client per window
+MAX_QUESTIONS_PER_PDF = 10  # questions per PDF (per client) per window
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant answering questions about a PDF document.\n\n"
@@ -299,78 +299,34 @@ def consume_limit(state: dict, key: str, limit: int, window: float, now: float) 
     return True
 
 
-CLIENT_COOKIE = "drag_cid"  # persistent per-browser id (set/read in JS only)
-CLIENT_PARAM = "cid"  # server-readable transport for that id (query string)
-
-# 0-height JS reconciler that keeps the cookie and the query param in sync. CRITICAL: the
-# reconcile logic must run in the PARENT realm, not in this component iframe — the iframe is
-# sandboxed without top-navigation, so a `location.replace(...)` issued directly from it is
-# silently blocked by the browser (the exact same trap the Turnstile injector documents). So,
-# like Turnstile, the iframe only *appends a parent-realm <script>* (id `cid-recon`, added once)
-# whose body runs un-sandboxed and can navigate.
-# Logic: id = cookie || param || freshly-minted; write the cookie if it's missing/stale; then,
-# if the URL's param doesn't match, set it and reload ONCE. Steady state (param == cookie) does
-# nothing — no loop. A new tab opened from the bare URL has the cookie but no param, so it seeds
-# the param from the cookie and reloads → the server then reads the SAME id (what a bare query
-# param alone could never do). Degrades gracefully with cookies disabled (param-only, like the
-# old `rid`). `__PARAM__` / `__COOKIE__` are substituted at render time.
-CLIENT_ID_RECONCILER = """
-<script>
-(function () {
-  var d = window.parent.document;
-  if (d.getElementById('cid-recon')) return;
-  var s = d.createElement('script');
-  s.id = 'cid-recon';
-  s.textContent =
-    "(function(){" +
-    "function gc(n){var m=document.cookie.match(new RegExp('(?:^|; )'+n+'=([^;]*)'));return m?m[1]:null;}" +
-    "function sc(n,v){document.cookie=n+'='+v+'; path=/; max-age=31536000; SameSite=Lax';}" +
-    "var u=new URL(location.href);" +
-    "var p=u.searchParams.get('__PARAM__');" +
-    "var c=gc('__COOKIE__');" +
-    "var id=c||p;" +
-    "if(!id){id=(crypto&&crypto.randomUUID?crypto.randomUUID():(Date.now().toString(36)+Math.random().toString(36).slice(2))).replace(/-/g,'');}" +
-    "if(c!==id){sc('__COOKIE__',id);}" +
-    "if(p!==id){u.searchParams.set('__PARAM__',id);location.replace(u.toString());}" +
-    "})();";
-  d.head.appendChild(s);
-})();
-</script>
-"""
-
-
-def _reconcile_client_id() -> None:
-    components.html(
-        CLIENT_ID_RECONCILER.replace("__PARAM__", CLIENT_PARAM).replace(
-            "__COOKIE__", CLIENT_COOKIE
-        ),
-        height=0,
-    )
+CLIENT_PARAM = "cid"  # per-client id carried in the URL query string
 
 
 def client_id() -> str:
-    """Stable per-browser key for rate limiting (survives reload AND new tab).
+    """Stable per-client key for rate limiting, carried in the URL query string.
 
-    Streamlit Community Cloud breaks both naive approaches: `X-Forwarded-For` only carries
-    Streamlit's *internal* LB hops (verified live — it rotates between ~2 private 10.x nodes, so
-    the real client IP is unavailable), and `st.context.cookies` does NOT surface a JS-set
-    cookie on this host (verified live — the cookie exists in the browser but reads back empty
-    server-side). So the id lives in a cookie for persistence (so a NEW TAB inherits it) but is
-    transported to the server via a `cid` query param, the one thing `st.query_params` can
-    actually read. `_reconcile_client_id()` keeps the two in sync in JS — it's called once at
-    the top of main() (before the gate), so by the time this runs the `cid` is already in the
-    URL. Bypassable by clearing cookies, which is fine — this is a cost guardrail, not security.
+    Neither obvious identifier works on Streamlit Community Cloud:
+      • `X-Forwarded-For` only carries Streamlit's *internal* LB hops (verified live — it
+        rotates between ~2 private 10.x nodes), so the real client IP is unavailable; keying on
+        it both leaks across users and flips per request.
+      • `st.context.cookies` does NOT surface a JS-set cookie on this host (verified live — the
+        cookie is in the browser but reads back empty server-side), and carrying a cookie into
+        the URL needs a JS page reload, which (a) is blocked by the component-iframe sandbox and
+        (b) re-triggers the per-load Turnstile gate — a jarring double-gate.
+
+    A query param is the one id the server can both write (`st.query_params`, a rerun — NOT a
+    page reload, so the Turnstile session survives) and read back. It rides through the gate:
+    the gate's success callback rebuilds the URL from `location.href` (preserving `cid`) and only
+    `cf_token` is deleted afterwards. The bucket therefore persists on reload and on any new tab
+    that carries the URL (duplicate tab / opened link); it resets only on a truly fresh bare-URL
+    visit (or incognito) — an acceptable bound for a cost guardrail. (This is what the original
+    `rid` param intended; it never ran because the dead X-Forwarded-For branch short-circuited.)
     """
     cid = st.query_params.get(CLIENT_PARAM)
     if cid:
         return cid
-    # Param not present yet — this is the very first paint, before the reconciler's reload lands
-    # the id in the URL. Use a per-session placeholder so this single pre-reconcile run is keyed
-    # consistently; the reload then swaps in the stable cookie-backed id.
-    cid = st.session_state.get("_client_cid")
-    if not cid:
-        cid = uuid.uuid4().hex
-        st.session_state["_client_cid"] = cid
+    cid = uuid.uuid4().hex
+    st.query_params[CLIENT_PARAM] = cid  # rerun (not reload) — gate stays passed
     return cid
 
 
@@ -592,12 +548,6 @@ def main() -> None:
         "</style>",
         unsafe_allow_html=True,
     )
-
-    # Resolve the client id BEFORE the Turnstile gate. The reconciler may reload to stamp `cid`
-    # into the URL; doing it here means that reload happens *before* the gate is solved, so the
-    # visitor only clears Turnstile once. If it ran after the gate (e.g. inside client_id), the
-    # post-solve reload would start a fresh session and re-challenge — a jarring double-gate.
-    _reconcile_client_id()
 
     # --- Human-verification gate (Cloudflare Turnstile) ---
     # Enforced only when both keys are configured (so bare local dev stays ungated). Block the
