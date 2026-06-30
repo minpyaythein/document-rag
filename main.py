@@ -357,10 +357,10 @@ def client_id() -> str:
     cookie on this host (verified live — the cookie exists in the browser but reads back empty
     server-side). So the id lives in a cookie for persistence (so a NEW TAB inherits it) but is
     transported to the server via a `cid` query param, the one thing `st.query_params` can
-    actually read. `_reconcile_client_id()` keeps the two in sync in JS. Bypassable by clearing
-    cookies, which is fine — this is a cost guardrail, not a security control.
+    actually read. `_reconcile_client_id()` keeps the two in sync in JS — it's called once at
+    the top of main() (before the gate), so by the time this runs the `cid` is already in the
+    URL. Bypassable by clearing cookies, which is fine — this is a cost guardrail, not security.
     """
-    _reconcile_client_id()
     cid = st.query_params.get(CLIENT_PARAM)
     if cid:
         return cid
@@ -592,6 +592,12 @@ def main() -> None:
         "</style>",
         unsafe_allow_html=True,
     )
+
+    # Resolve the client id BEFORE the Turnstile gate. The reconciler may reload to stamp `cid`
+    # into the URL; doing it here means that reload happens *before* the gate is solved, so the
+    # visitor only clears Turnstile once. If it ran after the gate (e.g. inside client_id), the
+    # post-solve reload would start a fresh session and re-challenge — a jarring double-gate.
+    _reconcile_client_id()
 
     # --- Human-verification gate (Cloudflare Turnstile) ---
     # Enforced only when both keys are configured (so bare local dev stays ungated). Block the
