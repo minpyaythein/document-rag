@@ -593,6 +593,25 @@ def main() -> None:
 
     with st.sidebar:
         st.title(t["sidebar_title"])
+        # --- TEMP DEBUG: rate-limit key diagnostics (remove after investigating resets) ---
+        # Watch this across a reload and a new tab:
+        #  • key stable, count drops to 0  → container restarted/slept (Trigger 2)
+        #  • key changes                   → XFF unstable / fell back to rid (Trigger 1)
+        try:
+            _dbg_headers = st.context.headers or {}
+            _dbg_xff = _dbg_headers.get("X-Forwarded-For") or _dbg_headers.get(
+                "x-forwarded-for"
+            )
+        except Exception:
+            _dbg_xff = "(no st.context.headers)"
+        _dbg_rid = st.query_params.get("rid")
+        st.caption(
+            f"🐞 DEBUG\n\n"
+            f"- XFF: `{_dbg_xff or '—'}`\n"
+            f"- rid: `{_dbg_rid or '—'}`\n"
+            f"- client_id: `{client}`\n"
+            f"- uploads_used: `{uploads_used}` / {MAX_UPLOADS_PER_WINDOW}"
+        )
         file = st.file_uploader(
             t["uploader_label"],
             type=["pdf"],
