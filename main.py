@@ -299,24 +299,40 @@ def consume_limit(state: dict, key: str, limit: int, window: float, now: float) 
     return True
 
 
-CLIENT_COOKIE = "drag_cid"  # first-party per-browser id used as the rate-limit key
+CLIENT_COOKIE = "drag_cid"  # persistent per-browser id (set/read in JS only)
+CLIENT_PARAM = "cid"  # server-readable transport for that id (query string)
+
+# 0-height JS reconciler that keeps the cookie and the query param in sync. Runs in the parent
+# realm (same trick as the Turnstile injector) so it can touch the app's own cookie jar and URL.
+# Logic: id = cookie || param || freshly-minted; write the cookie if it's missing/stale; then,
+# if the URL's param doesn't match, set it and reload ONCE. Steady state (param == cookie) does
+# nothing — no loop. A new tab opened from the bare URL has the cookie but no param, so it seeds
+# the param from the cookie and reloads → the server then reads the SAME id (what a bare query
+# param alone could never do). Degrades gracefully with cookies disabled (param-only, like the
+# old `rid`). `__PARAM__` / `__COOKIE__` are substituted at render time.
+CLIENT_ID_RECONCILER = """
+<script>
+(function () {
+  var w = window.parent, d = w.document;
+  function getCookie(n){var m=d.cookie.match(new RegExp('(?:^|; )'+n+'=([^;]*)'));return m?m[1]:null;}
+  function setCookie(n,v){d.cookie=n+'='+v+'; path=/; max-age=31536000; SameSite=Lax';}
+  var url=new URL(w.location.href);
+  var param=url.searchParams.get('__PARAM__');
+  var cookie=getCookie('__COOKIE__');
+  var id=cookie||param;
+  if(!id){id=(w.crypto&&w.crypto.randomUUID?w.crypto.randomUUID():(Date.now().toString(36)+Math.random().toString(36).slice(2))).replace(/-/g,'');}
+  if(cookie!==id){setCookie('__COOKIE__',id);}
+  if(param!==id){url.searchParams.set('__PARAM__',id);w.location.replace(url.toString());}
+})();
+</script>
+"""
 
 
-def _set_client_cookie(cid: str) -> None:
-    """Persist the client id in a first-party cookie.
-
-    Streamlit has no native cookie *writer*. components.html runs in a same-origin (srcdoc,
-    allow-same-origin) iframe, so writing `window.parent.document.cookie` sets it on the app's
-    own origin — the same parent-realm trick the Turnstile injector uses. 0-height so it adds
-    no visible space. Long max-age; SameSite=Lax (no Secure, so it also works on local http).
-    """
+def _reconcile_client_id() -> None:
     components.html(
-        f"""
-        <script>
-        window.parent.document.cookie =
-          "{CLIENT_COOKIE}={cid}; path=/; max-age=31536000; SameSite=Lax";
-        </script>
-        """,
+        CLIENT_ID_RECONCILER.replace("__PARAM__", CLIENT_PARAM).replace(
+            "__COOKIE__", CLIENT_COOKIE
+        ),
         height=0,
     )
 
@@ -324,27 +340,26 @@ def _set_client_cookie(cid: str) -> None:
 def client_id() -> str:
     """Stable per-browser key for rate limiting (survives reload AND new tab).
 
-    We deliberately do NOT key on the IP: Streamlit Community Cloud's `X-Forwarded-For` only
-    carries Streamlit's *internal* load-balancer hops (verified live — it rotates between ~2
-    private 10.x nodes), so the real client IP is unavailable. Keying on it both leaks across
-    users (everyone collapses onto the same ~2 node IPs) and flips per request (looks like a
-    reset). A first-party cookie is the only stable per-client signal here. It's bypassable
-    (clear cookies / incognito), which is fine — this is a cost guardrail, not a security
-    control.
+    Streamlit Community Cloud breaks both naive approaches: `X-Forwarded-For` only carries
+    Streamlit's *internal* LB hops (verified live — it rotates between ~2 private 10.x nodes, so
+    the real client IP is unavailable), and `st.context.cookies` does NOT surface a JS-set
+    cookie on this host (verified live — the cookie exists in the browser but reads back empty
+    server-side). So the id lives in a cookie for persistence (so a NEW TAB inherits it) but is
+    transported to the server via a `cid` query param, the one thing `st.query_params` can
+    actually read. `_reconcile_client_id()` keeps the two in sync in JS. Bypassable by clearing
+    cookies, which is fine — this is a cost guardrail, not a security control.
     """
-    try:
-        cid = st.context.cookies.get(CLIENT_COOKIE)
-        if cid:
-            return cid
-    except Exception:
-        pass
-    # First visit (no cookie yet): mint an id, keep it in session_state so it's stable until
-    # the cookie round-trips on the next request, and write the cookie so it carries forward.
+    _reconcile_client_id()
+    cid = st.query_params.get(CLIENT_PARAM)
+    if cid:
+        return cid
+    # Param not present yet — this is the very first paint, before the reconciler's reload lands
+    # the id in the URL. Use a per-session placeholder so this single pre-reconcile run is keyed
+    # consistently; the reload then swaps in the stable cookie-backed id.
     cid = st.session_state.get("_client_cid")
     if not cid:
         cid = uuid.uuid4().hex
         st.session_state["_client_cid"] = cid
-    _set_client_cookie(cid)
     return cid
 
 
@@ -621,16 +636,13 @@ def main() -> None:
 
     with st.sidebar:
         st.title(t["sidebar_title"])
-        # --- TEMP DEBUG: confirm the cookie key is stable (remove once verified) ---
-        # Expect `cookie` + `client_id` to stay IDENTICAL across reload AND a new tab in the
-        # same browser. First-ever load shows "— (first load)" then sticks on the next request.
-        try:
-            _dbg_cookie = st.context.cookies.get(CLIENT_COOKIE)
-        except Exception:
-            _dbg_cookie = "(no cookies)"
+        # --- TEMP DEBUG: confirm the key is stable (remove once verified) ---
+        # Expect `cid param` + `client_id` to stay IDENTICAL across reload AND a new tab in the
+        # same browser (a brief auto-reload on first entry / new tab is the reconciler seeding
+        # the param from the cookie). uploads_used should then actually persist.
         st.caption(
             f"🐞 DEBUG\n\n"
-            f"- cookie: `{_dbg_cookie or '— (first load)'}`\n"
+            f"- cid param: `{st.query_params.get(CLIENT_PARAM) or '— (reconciling)'}`\n"
             f"- client_id: `{client}`\n"
             f"- uploads_used: `{uploads_used}` / {MAX_UPLOADS_PER_WINDOW}"
         )
