@@ -647,16 +647,6 @@ def main() -> None:
 
     with st.sidebar:
         st.title(t["sidebar_title"])
-        # --- TEMP DEBUG: confirm the key is stable (remove once verified) ---
-        # Expect `cid param` + `client_id` to stay IDENTICAL across reload AND a new tab in the
-        # same browser (a brief auto-reload on first entry / new tab is the reconciler seeding
-        # the param from the cookie). uploads_used should then actually persist.
-        st.caption(
-            f"🐞 DEBUG\n\n"
-            f"- cid param: `{st.query_params.get(CLIENT_PARAM) or '— (reconciling)'}`\n"
-            f"- client_id: `{client}`\n"
-            f"- uploads_used: `{uploads_used}` / {MAX_UPLOADS_PER_WINDOW}"
-        )
         file = st.file_uploader(
             t["uploader_label"],
             type=["pdf"],
