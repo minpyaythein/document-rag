@@ -302,8 +302,12 @@ def consume_limit(state: dict, key: str, limit: int, window: float, now: float) 
 CLIENT_COOKIE = "drag_cid"  # persistent per-browser id (set/read in JS only)
 CLIENT_PARAM = "cid"  # server-readable transport for that id (query string)
 
-# 0-height JS reconciler that keeps the cookie and the query param in sync. Runs in the parent
-# realm (same trick as the Turnstile injector) so it can touch the app's own cookie jar and URL.
+# 0-height JS reconciler that keeps the cookie and the query param in sync. CRITICAL: the
+# reconcile logic must run in the PARENT realm, not in this component iframe — the iframe is
+# sandboxed without top-navigation, so a `location.replace(...)` issued directly from it is
+# silently blocked by the browser (the exact same trap the Turnstile injector documents). So,
+# like Turnstile, the iframe only *appends a parent-realm <script>* (id `cid-recon`, added once)
+# whose body runs un-sandboxed and can navigate.
 # Logic: id = cookie || param || freshly-minted; write the cookie if it's missing/stale; then,
 # if the URL's param doesn't match, set it and reload ONCE. Steady state (param == cookie) does
 # nothing — no loop. A new tab opened from the bare URL has the cookie but no param, so it seeds
@@ -313,16 +317,23 @@ CLIENT_PARAM = "cid"  # server-readable transport for that id (query string)
 CLIENT_ID_RECONCILER = """
 <script>
 (function () {
-  var w = window.parent, d = w.document;
-  function getCookie(n){var m=d.cookie.match(new RegExp('(?:^|; )'+n+'=([^;]*)'));return m?m[1]:null;}
-  function setCookie(n,v){d.cookie=n+'='+v+'; path=/; max-age=31536000; SameSite=Lax';}
-  var url=new URL(w.location.href);
-  var param=url.searchParams.get('__PARAM__');
-  var cookie=getCookie('__COOKIE__');
-  var id=cookie||param;
-  if(!id){id=(w.crypto&&w.crypto.randomUUID?w.crypto.randomUUID():(Date.now().toString(36)+Math.random().toString(36).slice(2))).replace(/-/g,'');}
-  if(cookie!==id){setCookie('__COOKIE__',id);}
-  if(param!==id){url.searchParams.set('__PARAM__',id);w.location.replace(url.toString());}
+  var d = window.parent.document;
+  if (d.getElementById('cid-recon')) return;
+  var s = d.createElement('script');
+  s.id = 'cid-recon';
+  s.textContent =
+    "(function(){" +
+    "function gc(n){var m=document.cookie.match(new RegExp('(?:^|; )'+n+'=([^;]*)'));return m?m[1]:null;}" +
+    "function sc(n,v){document.cookie=n+'='+v+'; path=/; max-age=31536000; SameSite=Lax';}" +
+    "var u=new URL(location.href);" +
+    "var p=u.searchParams.get('__PARAM__');" +
+    "var c=gc('__COOKIE__');" +
+    "var id=c||p;" +
+    "if(!id){id=(crypto&&crypto.randomUUID?crypto.randomUUID():(Date.now().toString(36)+Math.random().toString(36).slice(2))).replace(/-/g,'');}" +
+    "if(c!==id){sc('__COOKIE__',id);}" +
+    "if(p!==id){u.searchParams.set('__PARAM__',id);location.replace(u.toString());}" +
+    "})();";
+  d.head.appendChild(s);
 })();
 </script>
 """
