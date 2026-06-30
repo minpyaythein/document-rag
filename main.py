@@ -124,14 +124,16 @@ TURNSTILE_GATE_INJECTOR = """
 """
 
 # --- Rate limiting (public-deploy guardrails) ---
-# Fixed-window limits kept server-side and keyed by client IP (see `_rate_state` /
-# `consume_limit`), mirroring the portfolio site's in-memory limiter. Because the state lives
-# in the Streamlit *server process* rather than in st.session_state, a browser reload — which
-# starts a fresh session — can't reset it. It resets only when the process restarts (e.g. the
-# host's container waking from sleep). Both caps share one window for simplicity.
+# Fixed-window limits kept server-side and keyed by a per-browser cookie (see `client_id` /
+# `consume_limit`), mirroring the portfolio site's in-memory limiter. We key on a cookie, not
+# the IP: Streamlit Cloud's X-Forwarded-For only exposes its own internal LB hops (see
+# `client_id`). Because the state lives in the Streamlit *server process* rather than in
+# st.session_state, a browser reload — which starts a fresh session — can't reset it. It
+# resets only when the process restarts (e.g. the host's container waking from sleep). Both
+# caps share one window for simplicity.
 UPLOAD_WINDOW_SECONDS = 1 * 60  # 1-minute rolling window
-MAX_UPLOADS_PER_WINDOW = 1  # PDFs indexed per IP per window
-MAX_QUESTIONS_PER_PDF = 10  # questions per PDF (per IP) per window
+MAX_UPLOADS_PER_WINDOW = 1  # PDFs indexed per browser per window
+MAX_QUESTIONS_PER_PDF = 10  # questions per PDF (per browser) per window
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant answering questions about a PDF document.\n\n"
@@ -297,27 +299,53 @@ def consume_limit(state: dict, key: str, limit: int, window: float, now: float) 
     return True
 
 
-def client_id() -> str:
-    """Stable per-client key that survives a page reload.
+CLIENT_COOKIE = "drag_cid"  # first-party per-browser id used as the rate-limit key
 
-    Prefers the real IP behind a proxy — most hosts set `X-Forwarded-For` — which is stable
-    across reloads. With no proxy (local dev) there's no such header, so we fall back to a
-    random id parked in the URL query string. Unlike `st.session_state` (a fresh session every
-    reload — which is exactly why the limit kept resetting), a query param rides along on F5,
-    so the same browser keeps the same bucket.
+
+def _set_client_cookie(cid: str) -> None:
+    """Persist the client id in a first-party cookie.
+
+    Streamlit has no native cookie *writer*. components.html runs in a same-origin (srcdoc,
+    allow-same-origin) iframe, so writing `window.parent.document.cookie` sets it on the app's
+    own origin — the same parent-realm trick the Turnstile injector uses. 0-height so it adds
+    no visible space. Long max-age; SameSite=Lax (no Secure, so it also works on local http).
+    """
+    components.html(
+        f"""
+        <script>
+        window.parent.document.cookie =
+          "{CLIENT_COOKIE}={cid}; path=/; max-age=31536000; SameSite=Lax";
+        </script>
+        """,
+        height=0,
+    )
+
+
+def client_id() -> str:
+    """Stable per-browser key for rate limiting (survives reload AND new tab).
+
+    We deliberately do NOT key on the IP: Streamlit Community Cloud's `X-Forwarded-For` only
+    carries Streamlit's *internal* load-balancer hops (verified live — it rotates between ~2
+    private 10.x nodes), so the real client IP is unavailable. Keying on it both leaks across
+    users (everyone collapses onto the same ~2 node IPs) and flips per request (looks like a
+    reset). A first-party cookie is the only stable per-client signal here. It's bypassable
+    (clear cookies / incognito), which is fine — this is a cost guardrail, not a security
+    control.
     """
     try:
-        headers = st.context.headers or {}
-        forwarded = headers.get("X-Forwarded-For") or headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        cid = st.context.cookies.get(CLIENT_COOKIE)
+        if cid:
+            return cid
     except Exception:
         pass
-    rid = st.query_params.get("rid")
-    if not rid:
-        rid = uuid.uuid4().hex
-        st.query_params["rid"] = rid
-    return rid
+    # First visit (no cookie yet): mint an id, keep it in session_state so it's stable until
+    # the cookie round-trips on the next request, and write the cookie so it carries forward.
+    cid = st.session_state.get("_client_cid")
+    if not cid:
+        cid = uuid.uuid4().hex
+        st.session_state["_client_cid"] = cid
+    _set_client_cookie(cid)
+    return cid
 
 
 def verify_turnstile(token: str) -> bool:
@@ -593,22 +621,16 @@ def main() -> None:
 
     with st.sidebar:
         st.title(t["sidebar_title"])
-        # --- TEMP DEBUG: rate-limit key diagnostics (remove after investigating resets) ---
-        # Watch this across a reload and a new tab:
-        #  • key stable, count drops to 0  → container restarted/slept (Trigger 2)
-        #  • key changes                   → XFF unstable / fell back to rid (Trigger 1)
+        # --- TEMP DEBUG: confirm the cookie key is stable (remove once verified) ---
+        # Expect `cookie` + `client_id` to stay IDENTICAL across reload AND a new tab in the
+        # same browser. First-ever load shows "— (first load)" then sticks on the next request.
         try:
-            _dbg_headers = st.context.headers or {}
-            _dbg_xff = _dbg_headers.get("X-Forwarded-For") or _dbg_headers.get(
-                "x-forwarded-for"
-            )
+            _dbg_cookie = st.context.cookies.get(CLIENT_COOKIE)
         except Exception:
-            _dbg_xff = "(no st.context.headers)"
-        _dbg_rid = st.query_params.get("rid")
+            _dbg_cookie = "(no cookies)"
         st.caption(
             f"🐞 DEBUG\n\n"
-            f"- XFF: `{_dbg_xff or '—'}`\n"
-            f"- rid: `{_dbg_rid or '—'}`\n"
+            f"- cookie: `{_dbg_cookie or '— (first load)'}`\n"
             f"- client_id: `{client}`\n"
             f"- uploads_used: `{uploads_used}` / {MAX_UPLOADS_PER_WINDOW}"
         )
