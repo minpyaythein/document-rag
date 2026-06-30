@@ -325,6 +325,45 @@ Added uptime + error monitoring, mirroring the portfolio's two-layer design.
 
 ---
 
+## 2026-07-01: Rate-limit key — fixed the "resets on reload / new tab" bug
+
+The per-client rate limiter was resetting unpredictably. Root cause and fix, after ruling out
+two dead ends on **Streamlit Community Cloud**:
+
+- **IP keying was broken (the actual original bug).** `client_id()` keyed on `X-Forwarded-For`,
+  but on this host XFF carries only Streamlit's **internal load-balancer hops** — rotating
+  private `10.x` IPs (verified live with a debug readout: `10.12.92.2` ↔ `10.13.129.13`). So
+  every visitor collapsed onto ~2 buckets *and* each reload flipped between them. The old `rid`
+  query-param fallback never ran — the XFF branch short-circuited above it.
+- **Dead end #1 — cookie via `st.context.cookies`.** Switched the key to a first-party cookie.
+  DevTools confirmed the cookie was *set* in the browser, but `st.context.cookies` **read it back
+  empty** server-side on Streamlit Cloud → the id was re-minted every load.
+- **Dead end #2 — cookie + JS reconciler.** Copied cookie→URL via a JS reload. First cut put the
+  `location.replace` *inside* the `components.html` iframe → silently blocked (iframe sandboxed
+  without top-navigation — the same trap the Turnstile injector documents); fixed by injecting a
+  **parent-realm** `<script>`. That worked, *but* every reload re-triggered the session-based
+  Turnstile gate → **double-gate** (pass → app flashes ~0.5 s → gate again). Moving the reconciler
+  before the gate only shortened the first gate; the full-page reload is the cause, so no
+  placement removes it.
+- **Fix that shipped — `st.query_params["cid"] = cid` (Python-set).** Dropped the cookie and all
+  JS. Python writing a query param updates the URL via a **rerun, not a browser reload**, so the
+  Turnstile session survives and the visitor clears the gate **once**. The `cid` rides through the
+  gate (its success callback rebuilds the URL from `location.href`, preserving `cid`; only
+  `cf_token` is deleted after). Net **−50 lines** vs. the cookie/reconciler version.
+- **Theory (the load-bearing idea):** on Streamlit, a **rerun** re-executes the script over the
+  live websocket (session kept); a **page reload** opens a new session (`st.session_state` lost,
+  session-gated features re-fire). Any time client identity / gate state must survive a URL
+  change, drive the change from **Python (rerun)**, never **JS (reload)**.
+- **Trade-off (accepted):** a fresh **bare-URL** tab (or incognito) starts a new bucket — fine
+  for a cost guardrail, and equivalent to a new visitor. Reloads and URL-carrying new tabs
+  (duplicate tab / opened link) keep the same bucket. The in-memory store still resets on
+  container restart (unfixable without an external store).
+- **Files**: `main.py` (`client_id()` rewrite, removed the cookie + JS reconciler); docs
+  (`README.md`/`README.ja.md` "per-IP" → "per-client", `ARCHITECTURE.md` §6a, this log).
+- **Knowledge note**: `~/Desktop/Study/Knowledge/streamlit-cloud-per-client-id-behind-turnstile.md`.
+
+---
+
 ## Frozen facts (keep consistent everywhere)
 
 - **Chat model**: set via `ZAI_MODEL` in `.env` (e.g. `glm-5.2`), through Z.AI, endpoint `https://api.z.ai/api/coding/paas/v4` (`temperature=0.3`, `max_tokens=1024`)

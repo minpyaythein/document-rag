@@ -48,9 +48,10 @@ together taught me:
   and doesn't re-spend on the same document.
 - **Bilingual UI (EN/JA)** — switch the whole interface between English and 日本語 from the
   language selector in the top-right corner.
-- **Public-deploy guardrails** — a 1MB upload cap plus per-IP rate limits (PDFs per window and
-  questions per PDF), shown live in a sidebar usage meter. The limits are held server-side, so
-  a page reload doesn't reset them; the uploader locks and auto-unlocks when the window frees.
+- **Public-deploy guardrails** — a 1MB upload cap plus per-client rate limits (PDFs per window
+  and questions per PDF), shown live in a sidebar usage meter. The limits are held server-side
+  and keyed by a per-client id carried in the URL, so a page reload doesn't reset them; the
+  uploader locks and auto-unlocks when the window frees.
 - **Bot protection (optional)** — a [Cloudflare Turnstile](https://www.cloudflare.com/products/turnstile/)
   gate can guard the whole app: nothing renders until the visitor clears the challenge, which is
   verified server-side. It's enabled only when the Turnstile keys are set, so local dev runs

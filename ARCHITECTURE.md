@@ -179,13 +179,13 @@ A few things are happening here:
 Made public-deploy-ready (target: a free-tier host) without a database. Three concerns:
 cap upload size, cap API spend, and hide Streamlit's dev chrome.
 
-### 6a. Server-side, IP-keyed rate limiter — *the reload-proof part*
+### 6a. Server-side, per-client rate limiter — *the reload-proof part*
 
 The naive approach — counting in `st.session_state` — resets the moment the user reloads the
 page, because a reload starts a fresh session. So the limiter state lives in the **server
 process** instead: a single dict returned by `@st.cache_resource` (one object shared across
-*all* sessions and reruns), keyed by client IP. It's a direct port of the portfolio site's
-in-memory `rate-limit.ts` — the same fixed-window `{count, reset_at}` buckets and IP keying.
+*all* sessions and reruns), keyed by a per-client id. It's a direct port of the portfolio site's
+in-memory `rate-limit.ts` — the same fixed-window `{count, reset_at}` buckets.
 
 ```python
 @st.cache_resource
@@ -203,17 +203,31 @@ def consume_limit(state, key, limit, window, now) -> bool:
     return True
 ```
 
-Two caps, two bucket namespaces: `upload:{ip}` (PDFs per window) and `q:{ip}:{file_id}`
-(questions per document per window). The client key prefers `X-Forwarded-For` (set by the
-host's proxy, stable across reloads); with no proxy (local dev) it falls back to a random id parked
-in the **URL query string** — which survives a reload, where `st.session_state` would not (a
-reload starts a fresh session, so a session-based key would silently reset the limit). Upload
-slots are consumed **before** embedding (the
-costly step); question slots at submit (each attempt is a billed call, so a stopped answer
-still counts). A read-only `peek_limit` drives the live usage meter without spending a slot.
+Two caps, two bucket namespaces: `upload:{cid}` (PDFs per window) and `q:{cid}:{file_id}`
+(questions per document per window). Upload slots are consumed **before** embedding (the costly
+step); question slots at submit (each attempt is a billed call, so a stopped answer still
+counts). A read-only `peek_limit` drives the live usage meter without spending a slot.
 
-**Why it survives a reload:** the buckets are in server memory, not the session. To get past
-the cap a user must re-upload — which itself spends an upload slot from the same IP bucket.
+**The client key (`cid`) is a random id carried in the URL query string** — deliberately not the
+IP or a cookie, both of which are dead on Streamlit Community Cloud:
+
+- **IP** (`X-Forwarded-For`): on this host it carries only Streamlit's *internal* load-balancer
+  hops (rotating private `10.x` addresses), not the real client — so it both leaks across users
+  and flips per request.
+- **Cookie**: `st.context.cookies` does not surface a JS-set cookie here (it's in the browser but
+  reads back empty server-side), and getting a cookie's value into a place the server can read
+  needs a JS page **reload** — which re-triggers the per-load Turnstile gate (a double-gate).
+
+The id is therefore minted in Python and written with `st.query_params["cid"] = cid`, which
+updates the URL via a **rerun, not a browser reload** — so the Turnstile session survives and the
+visitor clears the gate only once. (This is what the original `rid` param intended; it never ran
+because a dead `X-Forwarded-For` branch short-circuited above it.)
+
+**Why it survives a reload:** the buckets are in server memory (not the session), and `cid` rides
+along in the URL — a reload reloads the same `?cid=…` and lands on the same bucket; the gate's
+success callback rebuilds the URL from `location.href` so it keeps `cid` through every challenge.
+It persists across reloads and any URL-carrying new tab (duplicate tab / opened link); only a
+fresh bare-URL visit (or incognito) starts a new bucket — an acceptable bound for a guardrail.
 
 ### 6b. Dropzone lock + auto-unlock
 
@@ -275,7 +289,7 @@ for the bilingual interface, with the language picked by a top-right selector.
 | "Can you stop a long answer?" | Yes — the Stop button. Clicking a widget mid-run makes Streamlit abort and rerun, which interrupts `write_stream`; a wrapper saves the partial answer to session state so it isn't lost. |
 | "How is the UI bilingual?" | A `TRANSLATIONS` dict keyed `en`/`ja`; a top-right selector sets `st.session_state["lang"]` and every label/message renders through it. Streamlit has no built-in i18n, so the strings are kept in-app. |
 | "How would you scale it?" | Persist the index (e.g. pgvector/Chroma), support multiple/large docs, add conversation memory, and cite which chunks an answer came from. |
-| "How do you rate-limit without a DB?" | Fixed-window counters in a process-global `@st.cache_resource` dict keyed by client IP — server-side, so a page reload doesn't reset them. Ported from the portfolio's in-memory limiter. |
+| "How do you rate-limit without a DB?" | Fixed-window counters in a process-global `@st.cache_resource` dict keyed by a per-client id carried in the URL (`?cid=…`) — server-side, so a page reload doesn't reset them. Ported from the portfolio's in-memory limiter. (Not IP-keyed: Streamlit Cloud's `X-Forwarded-For` only exposes internal LB hops.) |
 
 ---
 
@@ -296,7 +310,9 @@ for the bilingual interface, with the language picked by a top-right selector.
 6. **Two providers, two keys.** Chat (Z.AI) and embeddings (Gemini) are separate
    services — two API keys, two points of failure. Fine for a small app; using one
    provider for both would simplify ops.
-7. **Rate limits are in-memory and IP-keyed.** They survive page reloads (server-side state)
-   but reset when the process restarts — e.g. a free-tier container waking from sleep — and IP
-   keying is coarse: users behind one NAT share a budget, a new IP/VPN bypasses it. A shared
-   store (Upstash Redis) is the upgrade if traffic ever warrants it.
+7. **Rate limits are in-memory and keyed by a URL id.** They survive page reloads (server-side
+   state + the `cid` URL param) but reset when the process restarts — e.g. a free-tier container
+   waking from sleep — and the key is best-effort: it's cleared by dropping the `cid`/cookies, a
+   fresh bare-URL tab, or incognito. (IP keying isn't an option — Streamlit Cloud's
+   `X-Forwarded-For` only carries internal LB hops.) A shared store (Upstash Redis) keyed off a
+   sturdier identity is the upgrade if traffic ever warrants it.
