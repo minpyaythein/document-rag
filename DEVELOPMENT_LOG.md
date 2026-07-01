@@ -364,6 +364,32 @@ two dead ends on **Streamlit Community Cloud**:
 
 ---
 
+## 2026-07-02: Stream smoothing + wider upload window
+
+### Streaming throttle (smoother token flow)
+- **Symptom**: on the live deploy the answer painted in ~100-word leaps, not a smooth flow.
+- **Diagnosis** (throwaway probe hitting Z.AI the same way `build_chain` does): Z.AI streams
+  sub-word tokens in sub-millisecond bursts — the provider is *not* chunky. The jumpiness is
+  Streamlit coalescing many rapid `st.write_stream` re-renders (shipped over the `_stcore`
+  websocket) into a few big paints.
+- **Fix**: new `throttle()` generator + `STREAM_THROTTLE_SECONDS = 0.05` — buffers tokens and
+  flushes at most ~20×/sec, giving Streamlit an even paint cadence instead of a flood. Sits
+  *after* `capture_answer` so `session_state` still updates per-token (Stop-persistence
+  unaffected); a final flush drops nothing. Pipeline is now
+  `chain.stream → stream_with_thinking → capture_answer → throttle → st.write_stream`.
+- **Caveat**: helps if Streamlit was coalescing our flood; won't help if the batching is
+  Streamlit Cloud edge-side (downstream of our yields). Tunable via the one constant.
+
+### Upload window 1 min → 5 min
+- `UPLOAD_WINDOW_SECONDS` **60 → 300**. Uploads now reset every 5 minutes (still 1 PDF /
+  window, 10 questions / PDF). User-facing meter + limit messages (EN/JA) render the number
+  from `window_minutes = UPLOAD_WINDOW_SECONDS // 60`, so they updated automatically — no
+  copy edits, EN/JA stay in lockstep. (Note: the 2026-06-28 entry's "10-minute" was already
+  stale — the constant had been 1 minute; it is now authoritatively 5.)
+- **Files**: `main.py` (both changes).
+
+---
+
 ## Frozen facts (keep consistent everywhere)
 
 - **Chat model**: set via `ZAI_MODEL` in `.env` (e.g. `glm-5.2`), through Z.AI, endpoint `https://api.z.ai/api/coding/paas/v4` (`temperature=0.3`, `max_tokens=1024`)

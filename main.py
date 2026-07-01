@@ -39,6 +39,11 @@ TEMPERATURE = 0.3
 MAX_TOKENS = 1024
 # GLM-5.2 is a reasoning model; disable the thinking trace for faster first-token latency.
 THINKING = {"type": "disabled"}
+# Z.AI streams sub-word tokens in sub-millisecond bursts (verified). Streamlit ships every
+# st.write_stream re-render over the _stcore websocket and coalesces those bursts into big,
+# jumpy paints. Buffering tokens and flushing on a fixed cadence gives Streamlit a paint
+# rhythm it can keep up with, so the answer flows steadily instead of in ~100-word leaps.
+STREAM_THROTTLE_SECONDS = 0.05  # ~20 paints/sec — smooth to the eye, cheap on the socket
 
 # --- Cloudflare Turnstile (human-verification gate) ---
 # A dedicated widget for this app — separate sitekey/secret from the portfolio site, so each
@@ -131,7 +136,7 @@ TURNSTILE_GATE_INJECTOR = """
 # than in st.session_state, a browser reload — which starts a fresh session — can't reset it. It
 # resets only when the process restarts (e.g. the host's container waking from sleep). Both caps
 # share one window for simplicity.
-UPLOAD_WINDOW_SECONDS = 1 * 60  # 1-minute rolling window
+UPLOAD_WINDOW_SECONDS = 5 * 60  # 5-minute rolling window
 MAX_UPLOADS_PER_WINDOW = 1  # PDFs indexed per client per window
 MAX_QUESTIONS_PER_PDF = 10  # questions per PDF (per client) per window
 
@@ -468,6 +473,28 @@ def capture_answer(stream):
         yield chunk
 
 
+def throttle(stream, interval: float = STREAM_THROTTLE_SECONDS):
+    """Coalesce fast token bursts into a steady paint cadence.
+
+    Sits *after* capture_answer so session_state stays current down to the last token
+    (Stop-persistence unaffected); this only smooths what st.write_stream renders. Tokens
+    are buffered and flushed at most every `interval` seconds, with a final flush so no
+    trailing text is dropped. Fewer, evenly spaced updates stop Streamlit from batching a
+    burst into one big jump.
+    """
+    buffer = []
+    last = time.monotonic()
+    for chunk in stream:
+        buffer.append(chunk)
+        now = time.monotonic()
+        if now - last >= interval:
+            yield "".join(buffer)
+            buffer.clear()
+            last = now
+    if buffer:
+        yield "".join(buffer)
+
+
 def autoscroll() -> None:
     """Keep the page pinned to the newest streamed text.
 
@@ -793,9 +820,11 @@ def main() -> None:
         try:
             with answer_box.container():
                 st.write_stream(
-                    capture_answer(
-                        stream_with_thinking(
-                            chain.stream(st.session_state.question), t["thinking"]
+                    throttle(
+                        capture_answer(
+                            stream_with_thinking(
+                                chain.stream(st.session_state.question), t["thinking"]
+                            )
                         )
                     )
                 )
